@@ -49,4 +49,29 @@ struct OndasTests {
     func ignoresNonImageMessages(_ message: String) {
         #expect(!ImageRequestHeuristic.mightRequestImage(message))
     }
+
+    @Test(arguments: [
+        "yes",
+        "yes please",
+        "sure, go ahead",
+        "okay",
+    ])
+    func acceptsImageOfferOnAffirmativeReply(_ reply: String) {
+        let offer = "Would you like me to create an image of that sunset?"
+        #expect(ImageRequestHeuristic.acceptsImageOffer(reply, previousAssistant: offer))
+    }
+
+    @Test func rejectsAcceptanceWhenNoOfferWasMade() {
+        // The assistant's previous turn wasn't an image offer, so "yes" stays plain chat.
+        #expect(!ImageRequestHeuristic.acceptsImageOffer("yes", previousAssistant: "The capital is Paris."))
+    }
+
+    @Test func rejectsNegativeReplyToImageOffer() {
+        let offer = "Want me to draw that for you?"
+        #expect(!ImageRequestHeuristic.acceptsImageOffer("no thanks", previousAssistant: offer))
+    }
+
+    @Test func rejectsAcceptanceWithNoPriorMessage() {
+        #expect(!ImageRequestHeuristic.acceptsImageOffer("yes", previousAssistant: nil))
+    }
 }

@@ -61,6 +61,13 @@ final class ChatEngine {
         logo, or other visual created. General questions and ordinary chat are false. When
         true, write imagePrompt as a single vivid, self-contained visual description for an
         image generator, incorporating the subject and any style the user requested.
+
+        You may be given the assistant's previous message alongside the user's reply. If the
+        assistant offered to create an image and the user's reply accepts it (e.g. "yes",
+        "sure"), set wantsImage to true and build imagePrompt from the image the assistant
+        offered — the reply itself won't restate the subject.
+
+        Never leave imagePrompt empty when wantsImage is true; always describe the subject.
         """
     )
 
@@ -158,6 +165,12 @@ final class ChatEngine {
         guard !text.isEmpty, !isResponding, !conversation.isAtCapacity else { return }
 
         let wasEmpty = !conversation.hasMessages
+        // Capture the assistant's last turn before inserting this one, so a bare acceptance like
+        // "yes" can be resolved against an image the assistant may have just offered. Only a
+        // text-only turn can be an *offer*; a turn that already produced an image is a
+        // fulfillment, so a following "yes" must not spawn a duplicate.
+        let lastAssistant = conversation.orderedMessages.last { $0.role == .assistant }
+        let previousAssistantText = (lastAssistant?.hasImage == true) ? nil : lastAssistant?.text
         let now = Date.now
 
         let userMessage = ChatMessage(role: .user, text: text, createdAt: now)
@@ -188,58 +201,128 @@ final class ChatEngine {
             return
         }
 
-        if ImageRequestHeuristic.mightRequestImage(text),
-           let prompt = await imagePrompt(for: text) {
-            await generateImage(prompt: prompt, for: text, session: session, into: assistant)
+        if let prompt = await imagePrompt(for: text, offeredBy: previousAssistantText) {
+            await generateImage(prompt: prompt, session: session, into: assistant)
             return
         }
 
         await respondWithText(to: text, session: session, into: assistant)
     }
 
-    /// Runs the image-intent classifier in a throwaway session so it never pollutes the
-    /// chat transcript. Returns the prompt to generate, or nil to fall back to a text reply.
-    private func imagePrompt(for text: String) async -> String? {
+    /// Decides whether this turn should produce an image and, if so, returns the prompt to
+    /// generate; nil falls back to a text reply.
+    ///
+    /// A cheap keyword prefilter gates the model classifier so ordinary chat never pays for it.
+    /// The prefilter also escalates a bare acceptance ("yes", "sure") when `previousAssistant`
+    /// looks like an image offer; in that case the offer text is handed to the classifier as
+    /// context so it can resolve the acceptance and write a prompt from what was offered. The
+    /// classifier runs in a throwaway session so it never pollutes the chat transcript.
+    private func imagePrompt(for text: String, offeredBy previousAssistant: String?) async -> String? {
+        let acceptsOffer = ImageRequestHeuristic.acceptsImageOffer(text, previousAssistant: previousAssistant)
+        guard ImageRequestHeuristic.mightRequestImage(text) || acceptsOffer else { return nil }
+
+        // A direct request stands on its own; only a bare acceptance needs the prior offer to
+        // make sense, so pass context (and pay the extra tokens) only then.
+        let context = acceptsOffer ? previousAssistant : nil
         let classifier = LanguageModelSession(instructions: Self.classifierInstructions)
         do {
-            let decision = try await classifier.respond(to: text, generating: ImageIntent.self).content
+            let decision = try await classifier.respond(
+                to: Self.classifierPrompt(for: text, previousAssistant: context),
+                generating: ImageIntent.self
+            ).content
             guard decision.wantsImage else { return nil }
-            let prompt = decision.imagePrompt.trimmingCharacters(in: .whitespacesAndNewlines)
-            return prompt.isEmpty ? text : prompt
+            let extracted = decision.imagePrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !extracted.isEmpty { return extracted }
+            // The classifier flagged an image but gave no prompt. A direct request is already
+            // image-shaped, so the user's own message is a usable fallback; a bare acceptance
+            // ("yes") carries no subject to draw, so decline rather than feed the generator a
+            // stray question.
+            return acceptsOffer ? nil : text
         } catch {
             // A classifier failure shouldn't block the conversation — treat as plain chat.
             return nil
         }
     }
 
+    /// Builds the classifier's input. Without context it's just the user's message; when the user
+    /// is replying to an image the assistant offered, both turns are included so a bare "yes"
+    /// resolves against the offer.
+    private static func classifierPrompt(for text: String, previousAssistant: String?) -> String {
+        guard let previousAssistant, !previousAssistant.isEmpty else { return text }
+        return """
+            The assistant previously said: "\(previousAssistant)"
+            The user now replied: "\(text)"
+
+            Decide whether the user is asking for an image, including accepting one the assistant \
+            just offered. If so, base imagePrompt on the image described in that exchange.
+            """
+    }
+
     /// Produces an image and a short spoken acknowledgment for an image turn.
     ///
-    /// The acknowledgment is routed through the live `session` (not the throwaway classifier)
-    /// so the running chat context records this turn — otherwise a follow-up like "make it
-    /// bigger" would have no memory that an image was ever requested. The two model calls run
-    /// concurrently since neither depends on the other.
+    /// Image generation runs first; the acknowledgment is only requested — and thereby recorded
+    /// in the live `session`'s transcript — *after* the image actually exists. Ordering it this
+    /// way keeps the session's context truthful: it never carries an "I made you an image" turn
+    /// for an image that failed to generate, so follow-ups like "make it bigger" are grounded in
+    /// reality. Routing the acknowledgment through the live `session` (not the throwaway
+    /// classifier) is what records the turn for those follow-ups.
     private func generateImage(
         prompt: String,
-        for userText: String,
         session: LanguageModelSession,
         into assistant: ChatMessage
     ) async {
         assistant.text = "Creating your image…"
         save(modelContext)
 
-        // Kick off image generation in a child task (a static call over Sendable args, so no
-        // captured non-Sendable state), then run the acknowledgment on the main actor — the two
-        // still overlap. The acknowledgment goes through the live `session` so this turn is
-        // recorded in the chat context for follow-ups like "make it bigger".
-        async let generated = ImageGenerator.generate(prompt: prompt)
-        let acknowledgment = (try? await session.respond(to: userText).content) ?? ""
-
         do {
-            assistant.imageData = try await generated
-            assistant.text = acknowledgment
+            let imageData = try await ImageGenerator.generate(prompt: prompt)
+            assistant.imageData = imageData
+            assistant.text = await acknowledgment(for: prompt, session: session)
         } catch {
             assistant.text = friendlyMessage(for: error)
         }
+    }
+
+    /// Asks the live model to caption an image that already exists. Falls back to a canned line
+    /// when the model returns nothing usable — including when it still produces a refusal despite
+    /// the reframed prompt, which would otherwise sit contradictorily next to the shown image.
+    private func acknowledgment(for prompt: String, session: LanguageModelSession) async -> String {
+        let spoken = ((try? await session.respond(to: Self.acknowledgmentPrompt(for: prompt)).content) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if spoken.isEmpty || Self.looksLikeRefusal(spoken) {
+            return Self.acknowledgmentFallback
+        }
+        return spoken
+    }
+
+    /// Default acknowledgment used when the model returns nothing usable.
+    private static let acknowledgmentFallback = "Here's your image!"
+
+    /// Phrases that mark a reply as the model wrongly claiming it can't make the image — the very
+    /// refusal the acknowledgment prompt is designed to avoid. Kept specific to image-creation
+    /// denials so ordinary captions that merely contain "can't" aren't discarded.
+    private static let refusalMarkers = [
+        "can't create", "cannot create", "can't generate", "cannot generate",
+        "can't make", "cannot make", "can't produce", "cannot produce",
+        "unable to create", "unable to generate", "don't have the ability",
+    ]
+
+    private static func looksLikeRefusal(_ text: String) -> Bool {
+        let lowered = text.lowercased()
+        return refusalMarkers.contains { lowered.contains($0) }
+    }
+
+    /// Prompts the live model to caption an image that *already exists*, rather than replaying
+    /// the user's "draw me X" request. The on-device model has no image capability and will
+    /// often refuse a raw generation request ("I can't create images") — a refusal that would
+    /// then sit right next to the image the app already produced. Framing the image as done
+    /// avoids that contradiction while still recording the turn for follow-ups.
+    private static func acknowledgmentPrompt(for imagePrompt: String) -> String {
+        """
+        You just created and showed the user an image of: \(imagePrompt)
+        Reply with one short, friendly sentence acknowledging it. Do not say you can't create \
+        images — the image already exists.
+        """
     }
 
     private func respondWithText(
