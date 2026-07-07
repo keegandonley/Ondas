@@ -15,6 +15,13 @@ struct ChatView: View {
     @State private var draft = ""
     @FocusState private var isComposerFocused: Bool
 
+    /// Increments on each send, driving the send-button symbol bounce and the send haptic.
+    @State private var sentCount = 0
+
+    /// Whether the transcript is scrolled near its bottom. Gates streaming auto-scroll (so
+    /// reading history isn't interrupted) and the visibility of the jump-to-bottom button.
+    @State private var isNearBottom = true
+
     var body: some View {
         VStack(spacing: 0) {
             transcript
@@ -32,6 +39,18 @@ struct ChatView: View {
         .task(id: conversation.id) {
             await engine.configure(conversation: conversation, context: modelContext)
         }
+        .onDisappear {
+            // Leaving the conversation cancels any in-flight reply so it stops streaming into a
+            // thread that's no longer on screen.
+            engine.cancelActiveTurn()
+        }
+        // A light tap when the user sends; a soft tap when a reply completes, an error tap when
+        // the turn failed. Haptics are a no-op on devices without a Taptic Engine (iPad/Catalyst).
+        .sensoryFeedback(.impact(weight: .light), trigger: sentCount)
+        .sensoryFeedback(trigger: engine.lastTurn) { _, turn in
+            guard let turn else { return nil }
+            return turn.failed ? .error : .impact(flexibility: .soft)
+        }
     }
 
     private var transcript: some View {
@@ -41,27 +60,79 @@ struct ChatView: View {
                     ForEach(conversation.orderedMessages) { message in
                         MessageBubble(
                             message: message,
-                            isAwaitingResponse: engine.isResponding && message.isEmptyPlaceholder
+                            isAwaitingResponse: engine.isResponding && message.isEmptyPlaceholder,
+                            isStreaming: isStreaming(message)
                         )
                         .id(message.id)
+                        .transition(.messageInsertion)
                     }
                 }
                 .padding(.horizontal)
                 .padding(.vertical, 16)
+                // Animate only when the message *count* changes, so new bubbles slide in without
+                // animating every token update as the last message streams.
+                .animation(
+                    .spring(response: 0.35, dampingFraction: 0.85),
+                    value: conversation.orderedMessages.count
+                )
                 // Anchor used to keep the newest message in view as the transcript grows.
                 Color.clear.frame(height: 1).id(bottomAnchorID)
+            }
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                let distanceFromBottom = geometry.contentSize.height
+                    - geometry.contentOffset.y - geometry.containerSize.height
+                return distanceFromBottom < Self.nearBottomThreshold
+            } action: { _, nearBottom in
+                isNearBottom = nearBottom
+            }
+            .overlay(alignment: .bottomTrailing) {
+                jumpToBottomButton(proxy)
+                    .opacity(isNearBottom ? 0 : 1)
+                    .allowsHitTesting(!isNearBottom)
+                    .animation(.easeInOut(duration: 0.2), value: isNearBottom)
             }
             .onChange(of: conversation.orderedMessages.count) {
                 scrollToBottom(proxy)
             }
             .onChange(of: lastMessageText) {
-                scrollToBottom(proxy)
+                // Follow streamed/late-arriving text only when already at the bottom, so scrolling
+                // up to read history isn't yanked back down mid-reply. Unanimated to stay glued
+                // smoothly to the growing text rather than stuttering per token.
+                if isNearBottom { scrollToBottom(proxy, animated: false) }
             }
             .onAppear {
                 scrollToBottom(proxy, animated: false)
             }
         }
     }
+
+    private func jumpToBottomButton(_ proxy: ScrollViewProxy) -> some View {
+        Button {
+            withAnimation(.easeOut(duration: 0.25)) {
+                proxy.scrollTo(bottomAnchorID, anchor: .bottom)
+            }
+        } label: {
+            Image(systemName: "chevron.down")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 36, height: 36)
+                .background(.regularMaterial, in: Circle())
+                .overlay(Circle().strokeBorder(.separator))
+        }
+        .padding(.trailing, 16)
+        .padding(.bottom, 8)
+        .accessibilityLabel("Scroll to latest message")
+    }
+
+    /// True while `message` is the in-flight assistant reply currently receiving streamed text.
+    private func isStreaming(_ message: ChatMessage) -> Bool {
+        engine.isResponding
+            && message.role == .assistant
+            && !message.text.isEmpty
+            && message.id == conversation.latestMessage?.id
+    }
+
+    private static let nearBottomThreshold: CGFloat = 120
 
     private func unavailableBanner(_ message: String) -> some View {
         Label(message, systemImage: "exclamationmark.triangle.fill")
@@ -137,6 +208,7 @@ struct ChatView: View {
                 Image(systemName: "arrow.up.circle.fill")
                     .font(.system(size: 32))
                     .symbolRenderingMode(.hierarchical)
+                    .symbolEffect(.bounce, value: sentCount)
             }
             .disabled(!canSend)
         }
@@ -155,7 +227,7 @@ struct ChatView: View {
     /// The last message's text, observed so streamed/late-arriving replies re-trigger a
     /// scroll to the bottom.
     private var lastMessageText: String {
-        conversation.orderedMessages.last?.text ?? ""
+        conversation.latestMessage?.text ?? ""
     }
 
     private let bottomAnchorID = "bottom-anchor"
@@ -164,7 +236,8 @@ struct ChatView: View {
         let outgoing = draft
         guard canSend else { return }
         draft = ""
-        Task { await engine.send(outgoing) }
+        sentCount += 1
+        engine.submit(outgoing)
     }
 
     private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) {
@@ -176,6 +249,16 @@ struct ChatView: View {
         } else {
             proxy.scrollTo(bottomAnchorID, anchor: .bottom)
         }
+    }
+}
+
+private extension AnyTransition {
+    /// New messages rise into place with a fade — a subtle, native-feeling insert.
+    static var messageInsertion: AnyTransition {
+        .asymmetric(
+            insertion: .move(edge: .bottom).combined(with: .opacity),
+            removal: .opacity
+        )
     }
 }
 

@@ -21,6 +21,14 @@ struct TokenUsage: Equatable {
     var isAtCapacity: Bool { used >= limit }
 }
 
+/// A marker of the most recently finished model turn, so the UI can fire a completion haptic.
+/// `id` changes on every turn (making it a usable `sensoryFeedback` trigger); `failed`
+/// distinguishes an error turn (error haptic) from a normal reply (soft-impact haptic).
+struct TurnSignal: Equatable {
+    let id: Int
+    let failed: Bool
+}
+
 /// Drives one conversation: sends user messages to the on-device language model and persists
 /// both sides of the exchange to SwiftData (which syncs via CloudKit).
 ///
@@ -51,6 +59,15 @@ final class ChatEngine {
     /// Live token usage for the current conversation, or nil when token counting isn't available
     /// (before iOS 26.4, or a count failed) — in which case the message-count cap applies instead.
     private(set) var tokenUsage: TokenUsage?
+
+    /// Marks the most recently completed turn so the view can fire a completion/error haptic.
+    private(set) var lastTurn: TurnSignal?
+    private var turnCounter = 0
+
+    /// The in-flight turn, if any. Held so it can be cancelled when the view is torn down or the
+    /// conversation changes — otherwise a streamed reply (now multi-second, not instant) would keep
+    /// writing into, and re-saving, a conversation the user has already navigated away from or deleted.
+    private var activeTurn: Task<Void, Never>?
 
     private var conversation: Conversation?
     private var modelContext: ModelContext?
@@ -96,6 +113,8 @@ final class ChatEngine {
     func configure(conversation: Conversation, context: ModelContext) async {
         modelContext = context
         if self.conversation?.id != conversation.id || session == nil {
+            // Abandon any turn still streaming into the previous conversation before switching.
+            cancelActiveTurn()
             self.conversation = conversation
             let (newSession, collector) = Self.makeSession(for: conversation)
             session = newSession
@@ -222,6 +241,20 @@ final class ChatEngine {
         }
     }
 
+    /// Starts a turn as a tracked task so it can be cancelled if the user leaves the conversation.
+    /// The composer disables itself while `isResponding`, so there is only ever one active turn.
+    func submit(_ raw: String) {
+        activeTurn = Task { [weak self] in await self?.send(raw) }
+    }
+
+    /// Cancels the in-flight turn (if any). The streaming loop checks `Task.isCancelled` and stops
+    /// writing, and `send` skips its trailing persistence so a torn-down/deleted conversation isn't
+    /// touched.
+    func cancelActiveTurn() {
+        activeTurn?.cancel()
+        activeTurn = nil
+    }
+
     /// Appends the user's message, then a model reply — which may include a tool-generated image
     /// — saving after each step so a mid-flight termination still leaves a coherent transcript.
     func send(_ raw: String) async {
@@ -253,8 +286,12 @@ final class ChatEngine {
         isResponding = true
         defer {
             isResponding = false
-            conversation.updatedAt = .now
-            save(modelContext)
+            // Skip the final save if the turn was cancelled: the conversation may have been left or
+            // deleted, so bumping `updatedAt`/saving would touch a torn-down model.
+            if !Task.isCancelled {
+                conversation.updatedAt = .now
+                save(modelContext)
+            }
         }
 
         if let availabilityMessage {
@@ -262,47 +299,65 @@ final class ChatEngine {
             return
         }
 
-        await respond(to: text, session: session, collector: imageCollector, into: assistant)
+        let failed = await respond(to: text, session: session, collector: imageCollector, into: assistant)
         // Re-enable the composer as soon as the reply lands; the token refresh below updates the
         // meter and cap without making the user wait on a second model call. (The defer resets
         // this too, so every exit path is covered.)
         isResponding = false
+        // The user navigated away mid-reply; don't refresh the meter or fire a completion haptic
+        // for a conversation that's no longer on screen.
+        guard !Task.isCancelled else { return }
         // The turn changed the session transcript; refresh the meter and token-based cap.
         await refreshTokenUsage()
+        // Signal the finished turn so the view can play a completion (or error) haptic.
+        turnCounter += 1
+        lastTurn = TurnSignal(id: turnCounter, failed: failed)
     }
 
     /// Runs one model turn. The model answers in natural language and, when the user wants a
     /// picture, calls the image tool itself; any image it produced is drained from `collector`
     /// and attached to the assistant message. Routing through the live `session` records the turn
     /// so follow-ups like "make it bigger" keep their context.
+    /// Returns `true` if the turn failed (so the caller can pick an error haptic).
     private func respond(
         to text: String,
         session: LanguageModelSession,
         collector: GeneratedImageCollector,
         into assistant: ChatMessage
-    ) async {
+    ) async -> Bool {
         // Start the turn with an empty collector so this message only attaches what it generates.
         await collector.reset()
         do {
-            let reply = try await session.respond(to: text).content
+            // Stream the reply so text appears token-by-token instead of all at once. Each
+            // snapshot carries the full response so far, so assigning it directly keeps
+            // `assistant.text` correct without manual concatenation. These in-memory updates
+            // drive the UI via @Observable; the turn is persisted once it completes (see `send`).
+            for try await snapshot in session.streamResponse(to: text) {
+                // Stop writing into the message once the turn is cancelled (view gone / thread
+                // switched or deleted), rather than mutating an abandoned model each token.
+                if Task.isCancelled { break }
+                assistant.text = snapshot.content
+            }
             if let imageData = await collector.take() {
                 assistant.imageData = imageData
             }
-            assistant.text = reply
+            return false
         } catch {
             // The turn failed. Drain the collector first: if the tool produced an image before the
             // failure (e.g. reply composition threw afterward), keep it — the user still gets the
             // picture they asked for, and it stands alone rather than beside a contradictory error
-            // caption. Only when no image survived do we surface a friendly message. A
-            // `ToolCallError` means the tool itself threw (e.g. the generator is unavailable), so
-            // unwrap its real cause for the message.
+            // caption (any partial streamed text is dropped). Only when no image survived do we
+            // surface a friendly message. A `ToolCallError` means the tool itself threw (e.g. the
+            // generator is unavailable), so unwrap its real cause for the message.
             if let imageData = await collector.take() {
                 assistant.imageData = imageData
+                assistant.text = ""
             } else if let toolError = error as? LanguageModelSession.ToolCallError {
                 assistant.text = friendlyMessage(for: toolError.underlyingError)
             } else {
                 assistant.text = friendlyMessage(for: error)
             }
+            return true
         }
     }
 

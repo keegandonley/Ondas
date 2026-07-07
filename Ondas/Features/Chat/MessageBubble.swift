@@ -11,12 +11,18 @@ struct MessageBubble: View {
     /// bubble shows a typing indicator instead of empty text.
     let isAwaitingResponse: Bool
 
+    /// True while this assistant message is actively receiving streamed text, so a blinking
+    /// caret trails the content to signal generation is still in progress.
+    var isStreaming: Bool = false
+
     var body: some View {
         HStack {
             if isUser { Spacer(minLength: 40) }
             content
             if !isUser { Spacer(minLength: 40) }
         }
+        // Cross-fade the thinking dots into the reply as the first token lands.
+        .animation(.easeInOut(duration: 0.2), value: isAwaitingResponse)
     }
 
     @ViewBuilder
@@ -26,6 +32,7 @@ struct MessageBubble: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 12)
                 .background(Theme.assistantBubble, in: bubbleShape)
+                .transition(.opacity)
         } else {
             VStack(alignment: .leading, spacing: 8) {
                 if let image = generatedImage {
@@ -37,9 +44,10 @@ struct MessageBubble: View {
                             cornerRadius: Theme.bubbleCornerRadius - 6,
                             style: .continuous
                         ))
+                        .transition(.opacity.combined(with: .scale(scale: 0.97)))
                 }
                 if !message.text.isEmpty {
-                    Text(message.text)
+                    messageText
                         .foregroundStyle(isUser ? Color.white : Color.primary)
                         .textSelection(.enabled)
                 }
@@ -47,8 +55,29 @@ struct MessageBubble: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .background(isUser ? Theme.userBubble : Theme.assistantBubble, in: bubbleShape)
+            .transition(.opacity)
+            // Reveal a generated image with a soft fade + scale once its bytes arrive.
+            .animation(.easeOut(duration: 0.3), value: message.hasImage)
         }
     }
+
+    /// The reply text, with a blinking caret appended while it is still streaming in. The caret is
+    /// concatenated into the same `Text` (not overlaid) so it wraps naturally at the end of the
+    /// last line; `TimelineView` toggles it on a fixed cadence.
+    @ViewBuilder
+    private var messageText: some View {
+        if isStreaming {
+            TimelineView(.periodic(from: .now, by: Self.caretBlinkInterval)) { context in
+                let tick = Int(context.date.timeIntervalSinceReferenceDate / Self.caretBlinkInterval)
+                let caret = tick.isMultiple(of: 2) ? " ▍" : ""
+                Text(verbatim: message.text + caret)
+            }
+        } else {
+            Text(message.text)
+        }
+    }
+
+    private static let caretBlinkInterval: TimeInterval = 0.6
 
     private var isUser: Bool {
         message.role == .user
