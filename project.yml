@@ -1,0 +1,81 @@
+name: PocketChat
+options:
+  bundleIdPrefix: com.keegancodes
+  deploymentTarget:
+    # FoundationModels (Apple Intelligence on-device LLM) and the GA image-generation
+    # APIs require iOS 26.
+    iOS: "26.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    DEVELOPMENT_TEAM: 3D997JL57S
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_STRICT_CONCURRENCY: complete
+
+targets:
+  PocketChat:
+    type: application
+    platform: iOS
+    sources:
+      - path: PocketChat
+    info:
+      path: PocketChat/Resources/Info.plist
+      properties:
+        CFBundleDisplayName: PocketChat
+        # App Store Connect infers the export-compliance answer from the bundle.
+        # This app implements no non-exempt encryption.
+        ITSAppUsesNonExemptEncryption: false
+        LSApplicationCategoryType: public.app-category.productivity
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UILaunchScreen:
+          UIColorName: LaunchBackground
+        # CloudKit delivers cross-device sync via silent remote-notification pushes.
+        UIBackgroundModes:
+          - remote-notification
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.keegancodes.pocketchat
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MACCATALYST: true
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+    entitlements:
+      path: PocketChat/Resources/PocketChat.entitlements
+      properties:
+        aps-environment: development
+        com.apple.developer.icloud-container-identifiers:
+          - iCloud.com.keegancodes.pocketchat
+        com.apple.developer.icloud-services:
+          - CloudKit
+        com.apple.developer.ubiquity-kvstore-identifier: "$(TeamIdentifierPrefix)com.keegancodes.pocketchat"
+        # Sandboxed Mac Catalyst blocks CloudKit traffic without the network-client
+        # entitlement; declared here so `xcodegen generate` never drops it.
+        com.apple.security.app-sandbox: true
+        com.apple.security.network.client: true
+
+  PocketChatTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: PocketChatTests
+    dependencies:
+      - target: PocketChat
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.keegancodes.pocketchat.tests
+        GENERATE_INFOPLIST_FILE: true
+
+schemes:
+  PocketChat:
+    build:
+      targets:
+        PocketChat: all
+    test:
+      targets:
+        - PocketChatTests
+    run:
+      config: Debug

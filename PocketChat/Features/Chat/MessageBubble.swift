@@ -1,0 +1,91 @@
+import SwiftUI
+import UIKit
+
+/// Renders one message: a right-aligned accent bubble for the user, a left-aligned neutral
+/// bubble for the assistant. Assistant messages can carry a generated image, plain text, or
+/// a "thinking" indicator while a reply is in flight.
+struct MessageBubble: View {
+    let message: ChatMessage
+
+    /// True when this is the assistant's placeholder and the model is still working, so the
+    /// bubble shows a typing indicator instead of empty text.
+    let isAwaitingResponse: Bool
+
+    var body: some View {
+        HStack {
+            if isUser { Spacer(minLength: 40) }
+            content
+            if !isUser { Spacer(minLength: 40) }
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if isAwaitingResponse {
+            ThinkingIndicator()
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .background(Theme.assistantBubble, in: bubbleShape)
+        } else {
+            VStack(alignment: .leading, spacing: 8) {
+                if let image = generatedImage {
+                    image
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxWidth: 320)
+                        .clipShape(RoundedRectangle(
+                            cornerRadius: Theme.bubbleCornerRadius - 6,
+                            style: .continuous
+                        ))
+                }
+                if !message.text.isEmpty {
+                    Text(message.text)
+                        .foregroundStyle(isUser ? Color.white : Color.primary)
+                        .textSelection(.enabled)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(isUser ? Theme.userBubble : Theme.assistantBubble, in: bubbleShape)
+        }
+    }
+
+    private var isUser: Bool {
+        message.role == .user
+    }
+
+    private var bubbleShape: some Shape {
+        RoundedRectangle(cornerRadius: Theme.bubbleCornerRadius, style: .continuous)
+    }
+
+    private var generatedImage: Image? {
+        guard let data = message.imageData, let uiImage = UIImage(data: data) else {
+            return nil
+        }
+        return Image(uiImage: uiImage)
+    }
+}
+
+/// Three dots that pulse while the model composes a reply.
+private struct ThinkingIndicator: View {
+    @State private var isAnimating = false
+
+    var body: some View {
+        HStack(spacing: 5) {
+            ForEach(0..<3, id: \.self) { index in
+                Circle()
+                    .fill(Color.secondary)
+                    .frame(width: 7, height: 7)
+                    .opacity(isAnimating ? 0.3 : 1)
+                    .animation(
+                        .easeInOut(duration: 0.6)
+                            .repeatForever()
+                            .delay(Double(index) * 0.2),
+                        value: isAnimating
+                    )
+            }
+        }
+        .onAppear { isAnimating = true }
+        .accessibilityLabel("Assistant is typing")
+    }
+}
