@@ -37,6 +37,18 @@ targets:
         # CloudKit delivers cross-device sync via silent remote-notification pushes.
         UIBackgroundModes:
           - remote-notification
+        # iPad (device family 2) builds must declare supported orientations or App
+        # Store validation rejects the binary (ITMS-90474). iPad multitasking requires
+        # all four; iPhone omits upside-down per the usual convention.
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.keegancodes.ondas
