@@ -40,16 +40,18 @@ then build and run.
 | Data models | `Ondas/Models/` (`Conversation`, `ChatMessage`, `ChatRole`) |
 | Chat orchestration | `Ondas/Services/ChatEngine.swift` |
 | Image generation | `Ondas/Services/ImageGenerator.swift` |
-| Image-intent detection | `ImageRequestHeuristic` (keyword prefilter) + `ImageIntent` (model classifier) |
+| Image tool | `ImageGenerationTool` (a FoundationModels `Tool` the model calls) |
 | UI | `Ondas/Features/` |
 
 ### How image requests work
 
-Generating an image on every turn would be wasteful, so Ondas decides in two cheap
-steps: a keyword prefilter (`ImageRequestHeuristic`) narrows candidates, then the language
-model confirms intent and writes a clean image prompt (`ImageIntent`). Only then does
-`ImageGenerator` run the on-device Image Playground model. Otherwise the message is answered
-as normal text.
+Image generation is registered on the live `LanguageModelSession` as a FoundationModels
+`Tool` (`ImageGenerationTool`), so the **model itself** decides when to create an image and
+calls the tool with a clean visual description. The tool runs the on-device Image Playground
+model (`ImageGenerator`) and the picture is handed back to the chat through a small `Sendable`
+`GeneratedImageCollector` (the tool call runs off the main actor). Because the model made the
+image, it writes a genuine natural-language reply about it — and handles follow-ups like
+"make it bigger" natively, with no separate intent classifier or acknowledgment reframing.
 
 ### Context persistence and the chat cap
 

@@ -4,29 +4,23 @@ import Observation
 import OSLog
 import SwiftData
 
-/// The language model's decision about whether a user message is an image request, and the
-/// prompt to hand the image generator when it is. `@Generable` lets the on-device model fill
-/// this in a single structured response.
-@Generable
-struct ImageIntent {
-    @Guide(description: "True only when the user clearly wants a picture, drawing, illustration, logo, or other visual to be created. False for general chat or questions about existing images.")
-    var wantsImage: Bool
-
-    @Guide(description: "When wantsImage is true, a vivid, self-contained visual description suitable for an image generator, capturing the subject and any style the user asked for. Empty otherwise.")
-    var imagePrompt: String
-}
-
-/// Drives one conversation: sends user messages to the on-device language model, decides
-/// when to generate an image instead of a text reply, and persists both sides of the
-/// exchange to SwiftData (which syncs via CloudKit).
+/// Drives one conversation: sends user messages to the on-device language model and persists
+/// both sides of the exchange to SwiftData (which syncs via CloudKit).
 ///
-/// Lives on the main actor and orchestrates every step sequentially, so all SwiftData
-/// mutation happens on the main context and there is no cross-actor state to guard.
+/// Image generation is the model's own decision: an `ImageGenerationTool` is registered on the
+/// live `LanguageModelSession`, so when the user asks for a picture the model calls the tool,
+/// the tool produces the image, and the model writes a genuine natural-language reply about it.
+/// There is no out-of-model intent classifier or acknowledgment reframing — the model knows an
+/// image was made because it made it.
 ///
-/// A `LanguageModelSession` holds the in-memory chat context. It is rebuilt when the engine
-/// is pointed at a different conversation, so context is retained while a thread is open but
-/// not restored across app launches — the full history is always persisted and shown either
-/// way.
+/// Lives on the main actor and orchestrates every step sequentially, so all SwiftData mutation
+/// happens on the main context and there is no cross-actor state to guard. The one value that
+/// crosses actors — image bytes produced inside the off-main-actor tool call — comes back
+/// through the `Sendable` `GeneratedImageCollector`.
+///
+/// A `LanguageModelSession` holds the in-memory chat context. It is rebuilt when the engine is
+/// pointed at a different conversation, rehydrating the model's working memory from the
+/// persisted transcript so context survives app relaunches and thread switches.
 @MainActor
 @Observable
 final class ChatEngine {
@@ -41,6 +35,11 @@ final class ChatEngine {
     private var modelContext: ModelContext?
     private var session: LanguageModelSession?
 
+    /// Drains images the `ImageGenerationTool` produces during a `respond` turn. Paired with
+    /// `session` (both are rebuilt together in `makeSession`) since the tool holds this same
+    /// collector.
+    private var imageCollector: GeneratedImageCollector?
+
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.keegancodes.ondas",
         category: "ChatEngine"
@@ -48,28 +47,13 @@ final class ChatEngine {
 
     private static let chatInstructionsText =
         """
-        You are Ondas, a helpful and friendly assistant that runs entirely on the
-        user's device. Answer conversationally and concisely. When the user asks you to
-        create, draw, or generate an image, the app produces the image for you — briefly
-        and naturally acknowledge the request rather than describing pixels.
+        You are Ondas, a helpful and friendly assistant that runs entirely on the user's
+        device. Answer conversationally and concisely. When the user wants a picture, drawing,
+        illustration, logo, or other visual — including when they accept an image you offered to
+        make — call the generateImage tool with a vivid description. The tool creates and shows
+        the image to the user, so reply naturally about the image you made; never say you can't
+        create images.
         """
-
-    private static let classifierInstructions = Instructions(
-        """
-        You decide whether a user's message is a request to generate an image. Only set
-        wantsImage to true when the user clearly wants a picture, drawing, illustration,
-        logo, or other visual created. General questions and ordinary chat are false. When
-        true, write imagePrompt as a single vivid, self-contained visual description for an
-        image generator, incorporating the subject and any style the user requested.
-
-        You may be given the assistant's previous message alongside the user's reply. If the
-        assistant offered to create an image and the user's reply accepts it (e.g. "yes",
-        "sure"), set wantsImage to true and build imagePrompt from the image the assistant
-        offered — the reply itself won't restate the subject.
-
-        Never leave imagePrompt empty when wantsImage is true; always describe the subject.
-        """
-    )
 
     /// Points the engine at `conversation`, rebuilding the model session only when the
     /// target thread actually changes. Safe to call repeatedly (e.g. from `.task(id:)`).
@@ -77,24 +61,37 @@ final class ChatEngine {
         modelContext = context
         if self.conversation?.id != conversation.id || session == nil {
             self.conversation = conversation
-            session = Self.makeSession(for: conversation)
+            let (newSession, collector) = Self.makeSession(for: conversation)
+            session = newSession
+            imageCollector = collector
         }
         refreshAvailability()
     }
 
     /// Builds the session for `conversation`, rehydrating the model's working memory from the
-    /// persisted transcript so context survives app relaunches and thread switches. A brand-new
-    /// thread starts from a blank instructions-only session.
-    private static func makeSession(for conversation: Conversation) -> LanguageModelSession {
+    /// persisted transcript so context survives app relaunches and thread switches, and
+    /// registering the image-generation tool. A brand-new thread starts from a blank
+    /// instructions-only session. Returns the collector the tool writes into so the engine can
+    /// drain it after each turn.
+    private static func makeSession(for conversation: Conversation) -> (LanguageModelSession, GeneratedImageCollector) {
+        let collector = GeneratedImageCollector()
+        let tool = ImageGenerationTool(collector: collector)
         let history = conversation.orderedMessages
-        guard !history.isEmpty else {
-            return LanguageModelSession(instructions: Instructions(chatInstructionsText))
+
+        let session: LanguageModelSession
+        if history.isEmpty {
+            session = LanguageModelSession(
+                tools: [tool],
+                instructions: Instructions(chatInstructionsText)
+            )
+        } else {
+            session = LanguageModelSession(
+                model: SystemLanguageModel.default,
+                tools: [tool],
+                transcript: makeTranscript(from: history)
+            )
         }
-        return LanguageModelSession(
-            model: SystemLanguageModel.default,
-            tools: [],
-            transcript: makeTranscript(from: history)
-        )
+        return (session, collector)
     }
 
     /// Reconstructs a `Transcript` from stored messages: a leading instructions entry (so the
@@ -155,22 +152,16 @@ final class ChatEngine {
         }
     }
 
-    /// Appends the user's message, then a model reply (text) or a generated image, saving
-    /// after each step so a mid-flight termination still leaves a coherent transcript.
+    /// Appends the user's message, then a model reply — which may include a tool-generated image
+    /// — saving after each step so a mid-flight termination still leaves a coherent transcript.
     func send(_ raw: String) async {
-        guard let conversation, let modelContext, let session else { return }
+        guard let conversation, let modelContext, let session, let imageCollector else { return }
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         // A full chat is closed to new turns — the UI reflects this, but guard defensively so a
         // late send (e.g. an in-flight submit) can't push past the cap.
         guard !text.isEmpty, !isResponding, !conversation.isAtCapacity else { return }
 
         let wasEmpty = !conversation.hasMessages
-        // Capture the assistant's last turn before inserting this one, so a bare acceptance like
-        // "yes" can be resolved against an image the assistant may have just offered. Only a
-        // text-only turn can be an *offer*; a turn that already produced an image is a
-        // fulfillment, so a following "yes" must not spawn a duplicate.
-        let lastAssistant = conversation.orderedMessages.last { $0.role == .assistant }
-        let previousAssistantText = (lastAssistant?.hasImage == true) ? nil : lastAssistant?.text
         let now = Date.now
 
         let userMessage = ChatMessage(role: .user, text: text, createdAt: now)
@@ -201,139 +192,41 @@ final class ChatEngine {
             return
         }
 
-        if let prompt = await imagePrompt(for: text, offeredBy: previousAssistantText) {
-            await generateImage(prompt: prompt, session: session, into: assistant)
-            return
-        }
-
-        await respondWithText(to: text, session: session, into: assistant)
+        await respond(to: text, session: session, collector: imageCollector, into: assistant)
     }
 
-    /// Decides whether this turn should produce an image and, if so, returns the prompt to
-    /// generate; nil falls back to a text reply.
-    ///
-    /// A cheap keyword prefilter gates the model classifier so ordinary chat never pays for it.
-    /// The prefilter also escalates a bare acceptance ("yes", "sure") when `previousAssistant`
-    /// looks like an image offer; in that case the offer text is handed to the classifier as
-    /// context so it can resolve the acceptance and write a prompt from what was offered. The
-    /// classifier runs in a throwaway session so it never pollutes the chat transcript.
-    private func imagePrompt(for text: String, offeredBy previousAssistant: String?) async -> String? {
-        let acceptsOffer = ImageRequestHeuristic.acceptsImageOffer(text, previousAssistant: previousAssistant)
-        guard ImageRequestHeuristic.mightRequestImage(text) || acceptsOffer else { return nil }
-
-        // A direct request stands on its own; only a bare acceptance needs the prior offer to
-        // make sense, so pass context (and pay the extra tokens) only then.
-        let context = acceptsOffer ? previousAssistant : nil
-        let classifier = LanguageModelSession(instructions: Self.classifierInstructions)
-        do {
-            let decision = try await classifier.respond(
-                to: Self.classifierPrompt(for: text, previousAssistant: context),
-                generating: ImageIntent.self
-            ).content
-            guard decision.wantsImage else { return nil }
-            let extracted = decision.imagePrompt.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !extracted.isEmpty { return extracted }
-            // The classifier flagged an image but gave no prompt. A direct request is already
-            // image-shaped, so the user's own message is a usable fallback; a bare acceptance
-            // ("yes") carries no subject to draw, so decline rather than feed the generator a
-            // stray question.
-            return acceptsOffer ? nil : text
-        } catch {
-            // A classifier failure shouldn't block the conversation — treat as plain chat.
-            return nil
-        }
-    }
-
-    /// Builds the classifier's input. Without context it's just the user's message; when the user
-    /// is replying to an image the assistant offered, both turns are included so a bare "yes"
-    /// resolves against the offer.
-    private static func classifierPrompt(for text: String, previousAssistant: String?) -> String {
-        guard let previousAssistant, !previousAssistant.isEmpty else { return text }
-        return """
-            The assistant previously said: "\(previousAssistant)"
-            The user now replied: "\(text)"
-
-            Decide whether the user is asking for an image, including accepting one the assistant \
-            just offered. If so, base imagePrompt on the image described in that exchange.
-            """
-    }
-
-    /// Produces an image and a short spoken acknowledgment for an image turn.
-    ///
-    /// Image generation runs first; the acknowledgment is only requested — and thereby recorded
-    /// in the live `session`'s transcript — *after* the image actually exists. Ordering it this
-    /// way keeps the session's context truthful: it never carries an "I made you an image" turn
-    /// for an image that failed to generate, so follow-ups like "make it bigger" are grounded in
-    /// reality. Routing the acknowledgment through the live `session` (not the throwaway
-    /// classifier) is what records the turn for those follow-ups.
-    private func generateImage(
-        prompt: String,
-        session: LanguageModelSession,
-        into assistant: ChatMessage
-    ) async {
-        assistant.text = "Creating your image…"
-        save(modelContext)
-
-        do {
-            let imageData = try await ImageGenerator.generate(prompt: prompt)
-            assistant.imageData = imageData
-            assistant.text = await acknowledgment(for: prompt, session: session)
-        } catch {
-            assistant.text = friendlyMessage(for: error)
-        }
-    }
-
-    /// Asks the live model to caption an image that already exists. Falls back to a canned line
-    /// when the model returns nothing usable — including when it still produces a refusal despite
-    /// the reframed prompt, which would otherwise sit contradictorily next to the shown image.
-    private func acknowledgment(for prompt: String, session: LanguageModelSession) async -> String {
-        let spoken = ((try? await session.respond(to: Self.acknowledgmentPrompt(for: prompt)).content) ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if spoken.isEmpty || Self.looksLikeRefusal(spoken) {
-            return Self.acknowledgmentFallback
-        }
-        return spoken
-    }
-
-    /// Default acknowledgment used when the model returns nothing usable.
-    private static let acknowledgmentFallback = "Here's your image!"
-
-    /// Phrases that mark a reply as the model wrongly claiming it can't make the image — the very
-    /// refusal the acknowledgment prompt is designed to avoid. Kept specific to image-creation
-    /// denials so ordinary captions that merely contain "can't" aren't discarded.
-    private static let refusalMarkers = [
-        "can't create", "cannot create", "can't generate", "cannot generate",
-        "can't make", "cannot make", "can't produce", "cannot produce",
-        "unable to create", "unable to generate", "don't have the ability",
-    ]
-
-    private static func looksLikeRefusal(_ text: String) -> Bool {
-        let lowered = text.lowercased()
-        return refusalMarkers.contains { lowered.contains($0) }
-    }
-
-    /// Prompts the live model to caption an image that *already exists*, rather than replaying
-    /// the user's "draw me X" request. The on-device model has no image capability and will
-    /// often refuse a raw generation request ("I can't create images") — a refusal that would
-    /// then sit right next to the image the app already produced. Framing the image as done
-    /// avoids that contradiction while still recording the turn for follow-ups.
-    private static func acknowledgmentPrompt(for imagePrompt: String) -> String {
-        """
-        You just created and showed the user an image of: \(imagePrompt)
-        Reply with one short, friendly sentence acknowledging it. Do not say you can't create \
-        images — the image already exists.
-        """
-    }
-
-    private func respondWithText(
+    /// Runs one model turn. The model answers in natural language and, when the user wants a
+    /// picture, calls the image tool itself; any image it produced is drained from `collector`
+    /// and attached to the assistant message. Routing through the live `session` records the turn
+    /// so follow-ups like "make it bigger" keep their context.
+    private func respond(
         to text: String,
         session: LanguageModelSession,
+        collector: GeneratedImageCollector,
         into assistant: ChatMessage
     ) async {
+        // Start the turn with an empty collector so this message only attaches what it generates.
+        await collector.reset()
         do {
-            assistant.text = try await session.respond(to: text).content
+            let reply = try await session.respond(to: text).content
+            if let imageData = await collector.take() {
+                assistant.imageData = imageData
+            }
+            assistant.text = reply
         } catch {
-            assistant.text = friendlyMessage(for: error)
+            // The turn failed. Drain the collector first: if the tool produced an image before the
+            // failure (e.g. reply composition threw afterward), keep it — the user still gets the
+            // picture they asked for, and it stands alone rather than beside a contradictory error
+            // caption. Only when no image survived do we surface a friendly message. A
+            // `ToolCallError` means the tool itself threw (e.g. the generator is unavailable), so
+            // unwrap its real cause for the message.
+            if let imageData = await collector.take() {
+                assistant.imageData = imageData
+            } else if let toolError = error as? LanguageModelSession.ToolCallError {
+                assistant.text = friendlyMessage(for: toolError.underlyingError)
+            } else {
+                assistant.text = friendlyMessage(for: error)
+            }
         }
     }
 

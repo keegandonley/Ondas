@@ -1,7 +1,11 @@
+import FoundationModels
+import Foundation
 import Testing
 @testable import Ondas
 
-/// Unit coverage for the pure helpers that don't require the on-device model.
+/// Unit coverage for the pure helpers that don't require the on-device model. The tool's live
+/// behavior (the model choosing to call it, real image generation) can only be verified on a
+/// device with Apple Intelligence, so these cover the plumbing around the boundary.
 struct OndasTests {
     // MARK: ConversationTitle
 
@@ -26,52 +30,42 @@ struct OndasTests {
         #expect(ConversationTitle.derive(from: "   ") == Conversation.defaultTitle)
     }
 
-    // MARK: ImageRequestHeuristic
+    // MARK: ImageGenerationTool.Arguments decoding
 
-    @Test(arguments: [
-        "draw a picture of a cat",
-        "can you generate an image of a sunset",
-        "make me a logo for my coffee shop",
-        "illustrate this idea",
-        "visualize the data as a scene",
-    ])
-    func flagsImageRequests(_ message: String) {
-        #expect(ImageRequestHeuristic.mightRequestImage(message))
+    /// The model fills the tool's arguments as `GeneratedContent`; confirm the `@Generable`
+    /// struct decodes the `prompt` property the tool relies on.
+    @Test func decodesPromptArgumentFromGeneratedContent() throws {
+        let content = GeneratedContent(properties: ["prompt": "a red bicycle on a beach"])
+        let arguments = try ImageGenerationTool.Arguments(content)
+        #expect(arguments.prompt == "a red bicycle on a beach")
     }
 
-    @Test(arguments: [
-        "what's the weather like today",
-        "tell me a joke",
-        "how do I make pasta",
-        "make a plan for tomorrow",
-        "",
-    ])
-    func ignoresNonImageMessages(_ message: String) {
-        #expect(!ImageRequestHeuristic.mightRequestImage(message))
+    // MARK: GeneratedImageCollector plumbing
+
+    /// `take()` returns the stored image once and then clears it, so a later turn starts empty.
+    @Test func collectorReturnsStoredImageOnceThenClears() async {
+        let collector = GeneratedImageCollector()
+        let bytes = Data([0x01, 0x02, 0x03])
+
+        await collector.store(bytes)
+        #expect(await collector.take() == bytes)
+        #expect(await collector.take() == nil)
     }
 
-    @Test(arguments: [
-        "yes",
-        "yes please",
-        "sure, go ahead",
-        "okay",
-    ])
-    func acceptsImageOfferOnAffirmativeReply(_ reply: String) {
-        let offer = "Would you like me to create an image of that sunset?"
-        #expect(ImageRequestHeuristic.acceptsImageOffer(reply, previousAssistant: offer))
+    /// The most recent image wins if the model calls the tool more than once in a turn, since a
+    /// `ChatMessage` holds a single image.
+    @Test func collectorKeepsMostRecentImage() async {
+        let collector = GeneratedImageCollector()
+        await collector.store(Data([0xAA]))
+        await collector.store(Data([0xBB]))
+        #expect(await collector.take() == Data([0xBB]))
     }
 
-    @Test func rejectsAcceptanceWhenNoOfferWasMade() {
-        // The assistant's previous turn wasn't an image offer, so "yes" stays plain chat.
-        #expect(!ImageRequestHeuristic.acceptsImageOffer("yes", previousAssistant: "The capital is Paris."))
-    }
-
-    @Test func rejectsNegativeReplyToImageOffer() {
-        let offer = "Want me to draw that for you?"
-        #expect(!ImageRequestHeuristic.acceptsImageOffer("no thanks", previousAssistant: offer))
-    }
-
-    @Test func rejectsAcceptanceWithNoPriorMessage() {
-        #expect(!ImageRequestHeuristic.acceptsImageOffer("yes", previousAssistant: nil))
+    /// `reset()` drops any leftover image before a turn begins.
+    @Test func collectorResetClearsPendingImage() async {
+        let collector = GeneratedImageCollector()
+        await collector.store(Data([0xFF]))
+        await collector.reset()
+        #expect(await collector.take() == nil)
     }
 }
