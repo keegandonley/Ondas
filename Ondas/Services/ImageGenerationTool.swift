@@ -44,11 +44,13 @@ actor GeneratedImageCollector {
 struct ImageGenerationTool: Tool {
     let name = "generateImage"
     let description = """
-        Generates a picture, drawing, illustration, logo, or other visual on-device from a text \
-        description and shows it to the user. Call this whenever the user wants an image created \
-        — including when they accept an image you offered to make. For a follow-up like "make it \
-        bigger" or "more colorful", call again with an updated description of the image already \
-        created. Do not call it for ordinary questions or chat.
+        Creates a picture, drawing, illustration, or logo on-device from a text description and \
+        shows it to the user. Call this ONLY when the user explicitly asks to create, draw, \
+        generate, or make an image or other visual, or clearly accepts an image you just \
+        offered. Do NOT call it to illustrate or accompany the answer to an informational \
+        question, definition, or fact — those are text replies, even when the subject could be \
+        pictured. For a follow-up like "make it bigger" or "more colorful" after you already \
+        made an image, call again with an updated description.
         """
 
     @Generable
