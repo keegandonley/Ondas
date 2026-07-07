@@ -46,7 +46,10 @@ targets:
     entitlements:
       path: Ondas/Resources/Ondas.entitlements
       properties:
-        aps-environment: development
+        # Distribution (App Store / TestFlight) builds must request the production
+        # APNs environment; the managed distribution profile only grants production.
+        # TestFlight and the App Store both route through production APNs.
+        aps-environment: production
         com.apple.developer.icloud-container-identifiers:
           - iCloud.com.keegancodes.ondas
         com.apple.developer.icloud-services:
