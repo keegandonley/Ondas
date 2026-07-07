@@ -10,8 +10,8 @@ xcuserdata/
 *.moved-aside
 
 # XcodeGen generates the project + Info.plist; keep them out of source control
-PocketChat.xcodeproj/
-PocketChat/Resources/Info.plist
+Ondas.xcodeproj/
+Ondas/Resources/Info.plist
 
 # Swift Package Manager
 .build/

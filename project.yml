@@ -1,4 +1,4 @@
-name: PocketChat
+name: Ondas
 options:
   bundleIdPrefix: com.keegancodes
   deploymentTarget:
@@ -17,15 +17,15 @@ settings:
     SWIFT_STRICT_CONCURRENCY: complete
 
 targets:
-  PocketChat:
+  Ondas:
     type: application
     platform: iOS
     sources:
-      - path: PocketChat
+      - path: Ondas
     info:
-      path: PocketChat/Resources/Info.plist
+      path: Ondas/Resources/Info.plist
       properties:
-        CFBundleDisplayName: PocketChat
+        CFBundleDisplayName: Ondas
         # App Store Connect infers the export-compliance answer from the bundle.
         # This app implements no non-exempt encryption.
         ITSAppUsesNonExemptEncryption: false
@@ -39,43 +39,43 @@ targets:
           - remote-notification
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.keegancodes.pocketchat
+        PRODUCT_BUNDLE_IDENTIFIER: com.keegancodes.ondas
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: true
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
     entitlements:
-      path: PocketChat/Resources/PocketChat.entitlements
+      path: Ondas/Resources/Ondas.entitlements
       properties:
         aps-environment: development
         com.apple.developer.icloud-container-identifiers:
-          - iCloud.com.keegancodes.pocketchat
+          - iCloud.com.keegancodes.ondas
         com.apple.developer.icloud-services:
           - CloudKit
-        com.apple.developer.ubiquity-kvstore-identifier: "$(TeamIdentifierPrefix)com.keegancodes.pocketchat"
+        com.apple.developer.ubiquity-kvstore-identifier: "$(TeamIdentifierPrefix)com.keegancodes.ondas"
         # Sandboxed Mac Catalyst blocks CloudKit traffic without the network-client
         # entitlement; declared here so `xcodegen generate` never drops it.
         com.apple.security.app-sandbox: true
         com.apple.security.network.client: true
 
-  PocketChatTests:
+  OndasTests:
     type: bundle.unit-test
     platform: iOS
     sources:
-      - path: PocketChatTests
+      - path: OndasTests
     dependencies:
-      - target: PocketChat
+      - target: Ondas
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.keegancodes.pocketchat.tests
+        PRODUCT_BUNDLE_IDENTIFIER: com.keegancodes.ondas.tests
         GENERATE_INFOPLIST_FILE: true
 
 schemes:
-  PocketChat:
+  Ondas:
     build:
       targets:
-        PocketChat: all
+        Ondas: all
     test:
       targets:
-        - PocketChatTests
+        - OndasTests
     run:
       config: Debug

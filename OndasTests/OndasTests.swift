@@ -1,8 +1,8 @@
 import Testing
-@testable import PocketChat
+@testable import Ondas
 
 /// Unit coverage for the pure helpers that don't require the on-device model.
-struct PocketChatTests {
+struct OndasTests {
     // MARK: ConversationTitle
 
     @Test func derivesTitleFromShortMessage() {

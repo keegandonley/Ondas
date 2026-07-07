@@ -42,13 +42,13 @@ final class ChatEngine {
     private var session: LanguageModelSession?
 
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.keegancodes.pocketchat",
+        subsystem: Bundle.main.bundleIdentifier ?? "com.keegancodes.ondas",
         category: "ChatEngine"
     )
 
     private static let chatInstructionsText =
         """
-        You are PocketChat, a helpful and friendly assistant that runs entirely on the
+        You are Ondas, a helpful and friendly assistant that runs entirely on the
         user's device. Answer conversationally and concisely. When the user asks you to
         create, draw, or generate an image, the app produces the image for you — briefly
         and naturally acknowledge the request rather than describing pixels.

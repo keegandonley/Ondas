@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// PocketChat's small visual vocabulary. Screens pull colors from here (and the asset
+/// Ondas's small visual vocabulary. Screens pull colors from here (and the asset
 /// catalog's `AccentColor`) so the look stays consistent as the UI grows.
 enum Theme {
     /// Fill for the user's own message bubbles — the app's accent.

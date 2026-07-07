@@ -1,4 +1,4 @@
-# PocketChat
+# Ondas
 
 A simple, private SwiftUI chat app built entirely on **Apple Intelligence**. Everything
 runs on-device — no accounts, no sign-up, no server.
@@ -21,8 +21,8 @@ runs on-device — no accounts, no sign-up, no server.
 ## Getting started
 
 ```sh
-xcodegen generate      # writes PocketChat.xcodeproj from project.yml
-open PocketChat.xcodeproj
+xcodegen generate      # writes Ondas.xcodeproj from project.yml
+open Ondas.xcodeproj
 ```
 
 Set your signing team and iCloud container in Xcode if the defaults don't match your account,
@@ -35,17 +35,17 @@ then build and run.
 
 | Area | File(s) |
 | --- | --- |
-| App entry | `PocketChat/App/PocketChatApp.swift` |
-| CloudKit-synced store | `PocketChat/App/AppModelContainer.swift` |
-| Data models | `PocketChat/Models/` (`Conversation`, `ChatMessage`, `ChatRole`) |
-| Chat orchestration | `PocketChat/Services/ChatEngine.swift` |
-| Image generation | `PocketChat/Services/ImageGenerator.swift` |
+| App entry | `Ondas/App/OndasApp.swift` |
+| CloudKit-synced store | `Ondas/App/AppModelContainer.swift` |
+| Data models | `Ondas/Models/` (`Conversation`, `ChatMessage`, `ChatRole`) |
+| Chat orchestration | `Ondas/Services/ChatEngine.swift` |
+| Image generation | `Ondas/Services/ImageGenerator.swift` |
 | Image-intent detection | `ImageRequestHeuristic` (keyword prefilter) + `ImageIntent` (model classifier) |
-| UI | `PocketChat/Features/` |
+| UI | `Ondas/Features/` |
 
 ### How image requests work
 
-Generating an image on every turn would be wasteful, so PocketChat decides in two cheap
+Generating an image on every turn would be wasteful, so Ondas decides in two cheap
 steps: a keyword prefilter (`ImageRequestHeuristic`) narrows candidates, then the language
 model confirms intent and writes a clean image prompt (`ImageIntent`). Only then does
 `ImageGenerator` run the on-device Image Playground model. Otherwise the message is answered
