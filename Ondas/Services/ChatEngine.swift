@@ -4,6 +4,23 @@ import Observation
 import OSLog
 import SwiftData
 
+/// A snapshot of how much of the on-device model's context window a conversation is using.
+/// `used` and `limit` are token counts; `limit` is the context window minus a reserve kept free
+/// for the model's reply. Drives the in-chat token meter and the token-based capacity cap.
+struct TokenUsage: Equatable {
+    let used: Int
+    let limit: Int
+
+    /// 0...1 share of the usable budget consumed, for the meter's progress bar.
+    var fraction: Double {
+        guard limit > 0 else { return 0 }
+        return min(1, Double(used) / Double(limit))
+    }
+
+    /// True once the conversation has consumed its usable token budget and can take no more turns.
+    var isAtCapacity: Bool { used >= limit }
+}
+
 /// Drives one conversation: sends user messages to the on-device language model and persists
 /// both sides of the exchange to SwiftData (which syncs via CloudKit).
 ///
@@ -31,6 +48,10 @@ final class ChatEngine {
     /// Non-nil when the on-device language model can't run, carrying a user-facing reason.
     private(set) var availabilityMessage: String?
 
+    /// Live token usage for the current conversation, or nil when token counting isn't available
+    /// (before iOS 26.4, or a count failed) — in which case the message-count cap applies instead.
+    private(set) var tokenUsage: TokenUsage?
+
     private var conversation: Conversation?
     private var modelContext: ModelContext?
     private var session: LanguageModelSession?
@@ -44,6 +65,17 @@ final class ChatEngine {
         subsystem: Bundle.main.bundleIdentifier ?? "com.keegancodes.ondas",
         category: "ChatEngine"
     )
+
+    /// Tokens held back from the context window for the model's reply, so a nearly-full chat can
+    /// still answer. Tuned against the on-device model's small (~4k-token) context window.
+    private static let responseTokenReserve = 1024
+
+    /// Whether the conversation can accept another turn. Prefers the real token budget; falls back
+    /// to the message-count cap when token counting is unavailable (pre-iOS 26.4 or a failed count).
+    var isAtCapacity: Bool {
+        if let tokenUsage { return tokenUsage.isAtCapacity }
+        return conversation?.isAtCapacity ?? false
+    }
 
     private static let chatInstructionsText =
         """
@@ -61,7 +93,7 @@ final class ChatEngine {
 
     /// Points the engine at `conversation`, rebuilding the model session only when the
     /// target thread actually changes. Safe to call repeatedly (e.g. from `.task(id:)`).
-    func configure(conversation: Conversation, context: ModelContext) {
+    func configure(conversation: Conversation, context: ModelContext) async {
         modelContext = context
         if self.conversation?.id != conversation.id || session == nil {
             self.conversation = conversation
@@ -70,6 +102,7 @@ final class ChatEngine {
             imageCollector = collector
         }
         refreshAvailability()
+        await refreshTokenUsage()
     }
 
     /// Builds the session for `conversation`, rehydrating the model's working memory from the
@@ -156,14 +189,47 @@ final class ChatEngine {
         }
     }
 
+    /// Recomputes `tokenUsage` from the session's live transcript against the model's context
+    /// window. Token counting is iOS 26.4+; on earlier systems (or if a count throws), `tokenUsage`
+    /// is cleared and capacity falls back to the message-count cap.
+    private func refreshTokenUsage() async {
+        guard let session else { return }
+        guard #available(iOS 26.4, *) else {
+            tokenUsage = nil
+            return
+        }
+        let model = SystemLanguageModel.default
+        // `contextSize` is the model's full window; hold back a reserve for the reply. If the
+        // window is somehow no larger than the reserve, treat the budget as undeterminable and
+        // fall back to the message-count cap rather than wedging an empty chat at capacity.
+        let limit = model.contextSize - Self.responseTokenReserve
+        guard limit > 0 else {
+            tokenUsage = nil
+            return
+        }
+        do {
+            // The session transcript is the exact context the model carries (instructions + turns).
+            let used = try await model.tokenCount(for: session.transcript)
+            // The engine is reused across conversations (`.task(id:)` re-`configure`s it in place),
+            // so a thread switch may have swapped `session` while this count was in flight. Only
+            // commit if it's still the session we counted — otherwise a stale count could lock out
+            // the now-current chat.
+            guard self.session === session else { return }
+            tokenUsage = TokenUsage(used: used, limit: limit)
+        } catch {
+            guard self.session === session else { return }
+            tokenUsage = nil
+        }
+    }
+
     /// Appends the user's message, then a model reply — which may include a tool-generated image
     /// — saving after each step so a mid-flight termination still leaves a coherent transcript.
     func send(_ raw: String) async {
         guard let conversation, let modelContext, let session, let imageCollector else { return }
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         // A full chat is closed to new turns — the UI reflects this, but guard defensively so a
-        // late send (e.g. an in-flight submit) can't push past the cap.
-        guard !text.isEmpty, !isResponding, !conversation.isAtCapacity else { return }
+        // late send (e.g. an in-flight submit) can't push past the token/message cap.
+        guard !text.isEmpty, !isResponding, !isAtCapacity else { return }
 
         let wasEmpty = !conversation.hasMessages
         let now = Date.now
@@ -197,6 +263,12 @@ final class ChatEngine {
         }
 
         await respond(to: text, session: session, collector: imageCollector, into: assistant)
+        // Re-enable the composer as soon as the reply lands; the token refresh below updates the
+        // meter and cap without making the user wait on a second model call. (The defer resets
+        // this too, so every exit path is covered.)
+        isResponding = false
+        // The turn changed the session transcript; refresh the meter and token-based cap.
+        await refreshTokenUsage()
     }
 
     /// Runs one model turn. The model answers in natural language and, when the user wants a

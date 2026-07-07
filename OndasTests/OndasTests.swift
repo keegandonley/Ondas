@@ -68,4 +68,28 @@ struct OndasTests {
         await collector.reset()
         #expect(await collector.take() == nil)
     }
+
+    // MARK: TokenUsage
+
+    @Test func tokenUsageFractionIsRatioOfUsedToLimit() {
+        let usage = TokenUsage(used: 768, limit: 3072)
+        #expect(usage.fraction == 0.25)
+    }
+
+    @Test func tokenUsageFractionClampsToOneWhenOverLimit() {
+        let usage = TokenUsage(used: 4000, limit: 3072)
+        #expect(usage.fraction == 1.0)
+    }
+
+    @Test func tokenUsageFractionIsZeroWhenLimitIsZero() {
+        // Guards against divide-by-zero if the context window can't be determined.
+        let usage = TokenUsage(used: 100, limit: 0)
+        #expect(usage.fraction == 0)
+    }
+
+    @Test func tokenUsageIsAtCapacityWhenUsedReachesLimit() {
+        #expect(TokenUsage(used: 3072, limit: 3072).isAtCapacity)
+        #expect(TokenUsage(used: 3073, limit: 3072).isAtCapacity)
+        #expect(!TokenUsage(used: 3071, limit: 3072).isAtCapacity)
+    }
 }

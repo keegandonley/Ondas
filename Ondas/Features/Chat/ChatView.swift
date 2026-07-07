@@ -18,17 +18,19 @@ struct ChatView: View {
     var body: some View {
         VStack(spacing: 0) {
             transcript
-            if conversation.isAtCapacity {
+            if engine.isAtCapacity {
                 capacityBanner
             } else if let availabilityMessage = engine.availabilityMessage {
                 unavailableBanner(availabilityMessage)
+            } else if let usage = engine.tokenUsage {
+                tokenMeter(usage)
             }
             composer
         }
         .navigationTitle(conversation.title)
         .navigationBarTitleDisplayMode(.inline)
         .task(id: conversation.id) {
-            engine.configure(conversation: conversation, context: modelContext)
+            await engine.configure(conversation: conversation, context: modelContext)
         }
     }
 
@@ -71,6 +73,35 @@ struct ChatView: View {
             .background(.bar)
     }
 
+    /// A slim live meter of how much of the model's context window this conversation is using.
+    /// The bar shifts from accent → orange → red as the chat approaches its token budget.
+    private func tokenMeter(_ usage: TokenUsage) -> some View {
+        VStack(spacing: 4) {
+            HStack {
+                Label("Context", systemImage: "gauge.medium")
+                Spacer(minLength: 8)
+                Text("\(usage.used.formatted()) / \(usage.limit.formatted()) tokens")
+                    .monospacedDigit()
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+
+            ProgressView(value: usage.fraction)
+                .tint(meterColor(for: usage.fraction))
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 6)
+        .background(.bar)
+    }
+
+    private func meterColor(for fraction: Double) -> Color {
+        switch fraction {
+        case ..<0.75: return .accentColor
+        case ..<0.9: return .orange
+        default: return .red
+        }
+    }
+
     private var capacityBanner: some View {
         HStack(spacing: 12) {
             Label(
@@ -99,7 +130,7 @@ struct ChatView: View {
                 .padding(.vertical, 9)
                 .background(Theme.assistantBubble, in: Capsule())
                 .focused($isComposerFocused)
-                .disabled(conversation.isAtCapacity)
+                .disabled(engine.isAtCapacity)
                 .onSubmit(send)
 
             Button(action: send) {
@@ -118,7 +149,7 @@ struct ChatView: View {
         !draft.isBlank
             && !engine.isResponding
             && engine.availabilityMessage == nil
-            && !conversation.isAtCapacity
+            && !engine.isAtCapacity
     }
 
     /// The last message's text, observed so streamed/late-arriving replies re-trigger a
