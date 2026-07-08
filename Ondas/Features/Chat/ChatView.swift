@@ -247,6 +247,7 @@ struct ChatView: View {
 
     private var composer: some View {
         HStack(alignment: .bottom, spacing: 10) {
+            imageToggleButton
             HStack(alignment: .center, spacing: 6) {
                 if isImageMode {
                     imageModeChip
@@ -281,6 +282,23 @@ struct ChatView: View {
         .padding(.vertical, 10)
         .background(.bar)
         .animation(.snappy(duration: 0.2), value: isImageMode)
+    }
+
+    /// A visible affordance for image generation: tapping it toggles `/image` mode without the user
+    /// having to know the text command. Highlights while active. The `/image` typed command still
+    /// works and drives the same mode.
+    private var imageToggleButton: some View {
+        Button {
+            withAnimation(.snappy(duration: 0.2)) { isImageMode.toggle() }
+            isComposerFocused = true
+        } label: {
+            Image(systemName: isImageMode ? "photo.fill" : "photo.badge.plus")
+                .font(.system(size: 26))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(isImageMode ? AnyShapeStyle(Theme.userBubble) : AnyShapeStyle(.secondary))
+        }
+        .disabled(engine.isAtCapacity)
+        .accessibilityLabel(isImageMode ? "Turn off image generation" : "Generate an image")
     }
 
     /// A highlighted pill shown at the head of the composer while in `/image` mode. Tapping it

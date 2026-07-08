@@ -12,6 +12,7 @@ enum AppModelContainer {
     private static let models: [any PersistentModel.Type] = [
         Conversation.self,
         ChatMessage.self,
+        GeneratedImage.self,
     ]
 
     static let schema = Schema(models)

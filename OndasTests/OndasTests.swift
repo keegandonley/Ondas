@@ -74,4 +74,39 @@ struct OndasTests {
         #expect(TokenUsage(used: 3073, limit: 3072).isAtCapacity)
         #expect(!TokenUsage(used: 3071, limit: 3072).isAtCapacity)
     }
+
+    // MARK: Gallery merge
+
+    private func makeData(_ byte: UInt8) -> Data { Data([byte]) }
+
+    @Test func galleryMergeOrdersAllImagesNewestFirst() {
+        let base = Date(timeIntervalSinceReferenceDate: 0)
+        let standalone = GeneratedImage(
+            prompt: "a cat", imageData: makeData(1), createdAt: base.addingTimeInterval(20)
+        )
+        let older = ChatMessage(role: .assistant, imageData: makeData(2), createdAt: base.addingTimeInterval(10))
+        let newest = ChatMessage(role: .assistant, imageData: makeData(3), createdAt: base.addingTimeInterval(30))
+
+        let merged = GalleryImageMerger.merge(standalone: [standalone], chatMessages: [older, newest])
+
+        #expect(merged.map(\.id) == [newest.id, standalone.id, older.id])
+    }
+
+    @Test func galleryMergeSkipsMessagesWithoutImages() {
+        let textOnly = ChatMessage(role: .assistant, text: "hello")
+        let withImage = ChatMessage(role: .assistant, imageData: makeData(9))
+
+        let merged = GalleryImageMerger.merge(standalone: [], chatMessages: [textOnly, withImage])
+
+        #expect(merged.count == 1)
+        #expect(merged.first?.id == withImage.id)
+    }
+
+    @Test func galleryMergeMarksStandaloneImagesAsHavingNoConversation() {
+        let standalone = GeneratedImage(prompt: "sunset", imageData: makeData(5))
+        let merged = GalleryImageMerger.merge(standalone: [standalone], chatMessages: [])
+
+        #expect(merged.first?.sourceConversationID == nil)
+        #expect(merged.first?.prompt == "sunset")
+    }
 }

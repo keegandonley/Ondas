@@ -26,6 +26,9 @@ targets:
       path: Ondas/Resources/Info.plist
       properties:
         CFBundleDisplayName: Ondas
+        # Add-only Photos access, requested at save time (never at launch). The app only ever
+        # writes generated images to the library; it never reads or lists the user's photos.
+        NSPhotoLibraryAddUsageDescription: Save generated images to your photo library.
         # App Store Connect infers the export-compliance answer from the bundle.
         # This app implements no non-exempt encryption.
         ITSAppUsesNonExemptEncryption: false

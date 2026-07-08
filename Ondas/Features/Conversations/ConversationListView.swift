@@ -13,6 +13,8 @@ struct ConversationListView: View {
     @State private var selectedConversationID: UUID?
     @State private var searchText = ""
     @State private var showingSettings = false
+    @State private var showingGallery = false
+    @State private var showingGenerator = false
 
     var body: some View {
         NavigationSplitView {
@@ -44,16 +46,28 @@ struct ConversationListView: View {
             .searchable(text: $searchText, prompt: "Search chats")
             .navigationTitle("Chats")
             .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button(action: startNewConversation) {
-                        Label("New Chat", systemImage: "square.and.pencil")
-                    }
-                }
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
                         showingSettings = true
                     } label: {
                         Label("Settings", systemImage: "gearshape")
+                    }
+                }
+                ToolbarItemGroup(placement: .primaryAction) {
+                    Button {
+                        showingGallery = true
+                    } label: {
+                        Label("Gallery", systemImage: "photo.on.rectangle.angled")
+                    }
+                    Button(action: startNewConversation) {
+                        Label("New Chat", systemImage: "square.and.pencil")
+                    }
+                }
+                ToolbarItem(placement: .bottomBar) {
+                    Button {
+                        showingGenerator = true
+                    } label: {
+                        Label("Generate Image", systemImage: "wand.and.stars")
                     }
                 }
             }
@@ -64,6 +78,14 @@ struct ConversationListView: View {
             }
             .sheet(isPresented: $showingSettings) {
                 SettingsView()
+            }
+            .sheet(isPresented: $showingGallery) {
+                GalleryView { conversationID in
+                    selectedConversationID = conversationID
+                }
+            }
+            .sheet(isPresented: $showingGenerator) {
+                ImageGeneratorView()
             }
         } detail: {
             if let conversation = selectedConversation {
@@ -152,15 +174,30 @@ struct ConversationListView: View {
 private struct ConversationRow: View {
     let conversation: Conversation
 
+    /// Fixed thumbnail edge, in points; decoded at 3× for a crisp Retina preview.
+    private static let thumbnailSize: CGFloat = 44
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(conversation.title)
-                .font(.headline)
-                .lineLimit(1)
-            Text(previewText)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+        HStack(spacing: 10) {
+            if let imageMessage = conversation.latestImageMessage,
+               let imageData = imageMessage.imageData {
+                ThumbnailImage(
+                    data: imageData,
+                    identity: imageMessage.id,
+                    maxPixelSize: Self.thumbnailSize * 3
+                )
+                .frame(width: Self.thumbnailSize, height: Self.thumbnailSize)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                Text(conversation.title)
+                    .font(.headline)
+                    .lineLimit(1)
+                Text(previewText)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
         }
         .padding(.vertical, 2)
     }

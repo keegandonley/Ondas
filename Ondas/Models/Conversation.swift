@@ -48,6 +48,12 @@ final class Conversation {
         orderedMessages.last
     }
 
+    /// The most recent message in this thread that carries a generated image, or nil if it has none.
+    /// Drives the list-row thumbnail so a glance at the sidebar reveals which chats produced images.
+    var latestImageMessage: ChatMessage? {
+        orderedMessages.last(where: { $0.hasImage })
+    }
+
     var hasMessages: Bool {
         !(messages ?? []).isEmpty
     }

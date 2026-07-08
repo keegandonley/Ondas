@@ -15,6 +15,13 @@ struct MessageBubble: View {
     /// caret trails the content to signal generation is still in progress.
     var isStreaming: Bool = false
 
+    @State private var saveState: SaveState = .idle
+    @State private var showDeniedAlert = false
+
+    private enum SaveState: Equatable {
+        case idle, saving, saved, failed
+    }
+
     var body: some View {
         HStack {
             if isUser { Spacer(minLength: 40) }
@@ -23,6 +30,12 @@ struct MessageBubble: View {
         }
         // Cross-fade the thinking dots into the reply as the first token lands.
         .animation(.easeInOut(duration: 0.2), value: isAwaitingResponse)
+        .alert("Photos Access Needed", isPresented: $showDeniedAlert) {
+            Button("Open Settings") { openSettings() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Allow adding to your photo library in Settings to save this image.")
+        }
     }
 
     @ViewBuilder
@@ -45,6 +58,7 @@ struct MessageBubble: View {
                             style: .continuous
                         ))
                         .transition(.opacity.combined(with: .scale(scale: 0.97)))
+                        .contextMenu { imageActions(image) }
                 }
                 if !message.text.isEmpty {
                     messageText
@@ -109,6 +123,38 @@ struct MessageBubble: View {
             return nil
         }
         return Image(uiImage: uiImage)
+    }
+
+    /// Save-to-Photos and Share actions offered from a long-press on a generated image.
+    @ViewBuilder
+    private func imageActions(_ image: Image) -> some View {
+        Button {
+            Task { await saveImage() }
+        } label: {
+            Label(saveState == .saved ? "Saved" : "Save to Photos", systemImage: "square.and.arrow.down")
+        }
+        .disabled(saveState == .saving || saveState == .saved)
+
+        ShareLink(item: image, preview: SharePreview("Generated image", image: image)) {
+            Label("Share", systemImage: "square.and.arrow.up")
+        }
+    }
+
+    private func saveImage() async {
+        guard let data = message.imageData else { return }
+        saveState = .saving
+        switch await PhotoLibrarySaver.save(data) {
+        case .saved: saveState = .saved
+        case .denied:
+            saveState = .idle
+            showDeniedAlert = true
+        case .failed: saveState = .failed
+        }
+    }
+
+    private func openSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        UIApplication.shared.open(url)
     }
 }
 
