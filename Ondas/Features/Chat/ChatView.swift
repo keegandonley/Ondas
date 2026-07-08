@@ -18,9 +18,18 @@ struct ChatView: View {
     /// Increments on each send, driving the send-button symbol bounce and the send haptic.
     @State private var sentCount = 0
 
-    /// Whether the transcript is scrolled near its bottom. Gates streaming auto-scroll (so
-    /// reading history isn't interrupted) and the visibility of the jump-to-bottom button.
-    @State private var isNearBottom = true
+    /// Whether the transcript follows streamed text to the bottom. Engaged by default and while the
+    /// user sits at the bottom; released the moment the user scrolls away, and re-engaged when they
+    /// scroll all the way back down.
+    @State private var autoScroll = true
+
+    /// True while the user is physically driving the scroll (dragging or coasting), so a scroll
+    /// away from the bottom can be attributed to them rather than to our own auto-scroll.
+    @State private var isUserScrolling = false
+
+    /// Live distance in points from the bottom of the transcript, driving both the auto-scroll
+    /// release/re-engage decision and the jump-to-bottom button's visibility.
+    @State private var distanceFromBottom: CGFloat = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -78,27 +87,42 @@ struct ChatView: View {
                 // Anchor used to keep the newest message in view as the transcript grows.
                 Color.clear.frame(height: 1).id(bottomAnchorID)
             }
-            .onScrollGeometryChange(for: Bool.self) { geometry in
-                let distanceFromBottom = geometry.contentSize.height
-                    - geometry.contentOffset.y - geometry.containerSize.height
-                return distanceFromBottom < Self.nearBottomThreshold
-            } action: { _, nearBottom in
-                isNearBottom = nearBottom
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                max(0, geometry.contentSize.height
+                    - geometry.contentOffset.y - geometry.containerSize.height)
+            } action: { _, distance in
+                distanceFromBottom = distance
+                if distance <= Self.atBottomThreshold {
+                    // Back at the bottom (whether the user scrolled there or our own auto-scroll
+                    // did) — follow the generation again.
+                    autoScroll = true
+                } else if isUserScrolling {
+                    // The user scrolled away from the bottom: hand them control and stay put.
+                    // Growth from streamed text (not user-driven) never trips this.
+                    autoScroll = false
+                }
+            }
+            .onScrollPhaseChange { _, phase in
+                isUserScrolling = phase == .tracking
+                    || phase == .interacting
+                    || phase == .decelerating
             }
             .overlay(alignment: .bottomTrailing) {
                 jumpToBottomButton(proxy)
-                    .opacity(isNearBottom ? 0 : 1)
-                    .allowsHitTesting(!isNearBottom)
-                    .animation(.easeInOut(duration: 0.2), value: isNearBottom)
+                    .opacity(showJumpButton ? 1 : 0)
+                    .allowsHitTesting(showJumpButton)
+                    .animation(.easeInOut(duration: 0.2), value: showJumpButton)
             }
             .onChange(of: conversation.orderedMessages.count) {
+                // A new message (the user's send, then the reply placeholder): snap to it and
+                // resume following the generation.
+                autoScroll = true
                 scrollToBottom(proxy)
             }
             .onChange(of: lastMessageText) {
-                // Follow streamed/late-arriving text only when already at the bottom, so scrolling
-                // up to read history isn't yanked back down mid-reply. Unanimated to stay glued
-                // smoothly to the growing text rather than stuttering per token.
-                if isNearBottom { scrollToBottom(proxy, animated: false) }
+                // Follow streamed/late-arriving text only while auto-scroll is engaged. Unanimated
+                // to stay glued smoothly to the growing text rather than stuttering per token.
+                if autoScroll { scrollToBottom(proxy, animated: false) }
             }
             .onAppear {
                 scrollToBottom(proxy, animated: false)
@@ -108,6 +132,7 @@ struct ChatView: View {
 
     private func jumpToBottomButton(_ proxy: ScrollViewProxy) -> some View {
         Button {
+            autoScroll = true
             withAnimation(.easeOut(duration: 0.25)) {
                 proxy.scrollTo(bottomAnchorID, anchor: .bottom)
             }
@@ -132,7 +157,18 @@ struct ChatView: View {
             && message.id == conversation.latestMessage?.id
     }
 
-    private static let nearBottomThreshold: CGFloat = 120
+    /// The button offers a way back to the latest message once the user has scrolled well clear
+    /// of the bottom (i.e. auto-scroll has been released and they're reading history).
+    private var showJumpButton: Bool {
+        distanceFromBottom > Self.jumpButtonThreshold
+    }
+
+    /// Slack for treating the transcript as "at the bottom" — small, so any deliberate scroll-up
+    /// releases auto-scroll, while sub-point layout jitter during streaming does not.
+    private static let atBottomThreshold: CGFloat = 40
+
+    /// How far from the bottom the user must be before the jump-to-bottom button appears.
+    private static let jumpButtonThreshold: CGFloat = 120
 
     private func unavailableBanner(_ message: String) -> some View {
         Label(message, systemImage: "exclamationmark.triangle.fill")
