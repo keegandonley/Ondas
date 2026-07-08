@@ -99,7 +99,17 @@ struct ChatView: View {
         let messages = conversation.orderedMessages
         return ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(spacing: 12) {
+                // Deliberately NOT a LazyVStack. On Mac Catalyst a lazy stack here livelocked the
+                // main thread after compaction: lazy row placement depends on the visible rect,
+                // but placing rows changes the content-size estimate, which (anchored near the
+                // bottom) moves the visible rect and re-places different rows — and with row
+                // heights as mixed as a ~25pt divider next to essay-length bubbles the estimate
+                // never converged, spinning inside a single layout pass at 100% CPU. Laziness
+                // bought nothing anyway: the surrounding layout asks the ScrollView for its ideal
+                // size, which measures every row each pass regardless. A plain VStack's content
+                // size is deterministic and viewport-independent, so the feedback loop can't form,
+                // and compaction keeps the transcript bounded.
+                VStack(spacing: 12) {
                     ForEach(messages) { message in
                         messageRow(message, latest: messages.last)
                             .id(message.id)
