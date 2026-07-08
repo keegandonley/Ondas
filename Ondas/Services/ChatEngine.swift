@@ -1,7 +1,6 @@
 import Foundation
 import FoundationModels
 import Observation
-import OSLog
 import SwiftData
 
 /// A snapshot of how much of the on-device model's context window a conversation is using.
@@ -75,11 +74,6 @@ final class ChatEngine {
     private var session: LanguageModelSession?
     private let generationSettings = GenerationSettingsStore()
 
-    private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.keegancodes.ondas",
-        category: "ChatEngine"
-    )
-
     /// Tokens held back from the context window for the model's reply, so a nearly-full chat can
     /// still answer. Tuned against the on-device model's small (~4k-token) context window.
     private static let responseTokenReserve = 1024
@@ -141,6 +135,9 @@ final class ChatEngine {
         ]
 
         for message in history {
+            // App-generated error/availability notices are not model output; seeding them would
+            // teach the rehydrated session it said "Sorry, I couldn't finish that." itself.
+            guard !message.isError else { continue }
             let content = seededContent(for: message)
             guard !content.isEmpty else { continue }
             let segment = Transcript.Segment.text(
@@ -176,7 +173,10 @@ final class ChatEngine {
         return message.text
     }
 
-    private func refreshAvailability() {
+    /// Recomputes `availabilityMessage` from the model's current availability. Called on
+    /// configure, on each send, and when the app returns to the foreground (via `ChatView`),
+    /// so the banner clears as soon as e.g. a model download finishes.
+    func refreshAvailability() {
         switch SystemLanguageModel.default.availability {
         case .available:
             availabilityMessage = nil
@@ -219,10 +219,16 @@ final class ChatEngine {
     }
 
     /// Starts a turn as a tracked task so it can be cancelled if the user leaves the conversation.
-    /// The composer disables itself while `isResponding`, so there is only ever one active turn.
     /// `asImage` is true when the user sent the `/image` command, which is the only thing that gives
     /// the turn the image tool.
+    ///
+    /// The composer disables itself while `isResponding`, but that flag only flips once the task
+    /// body runs — a second submit racing into that window would otherwise replace `activeTurn`
+    /// and leave the real in-flight turn uncancellable. Guard the flag and cancel any not-yet-run
+    /// predecessor so the handle always points at the one live turn.
     func submit(_ raw: String, asImage: Bool) {
+        guard !isResponding else { return }
+        cancelActiveTurn()
         activeTurn = Task { [weak self] in await self?.send(raw, asImage: asImage) }
     }
 
@@ -240,8 +246,9 @@ final class ChatEngine {
         guard let conversation, let modelContext else { return }
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         // A full chat is closed to new turns — the UI reflects this, but guard defensively so a
-        // late send (e.g. an in-flight submit) can't push past the token/message cap.
-        guard !text.isEmpty, !isResponding, !isAtCapacity else { return }
+        // late send (e.g. an in-flight submit) can't push past the token/message cap. A turn
+        // cancelled before it ever ran (superseded in `submit`) must not touch the store at all.
+        guard !text.isEmpty, !isResponding, !isAtCapacity, !Task.isCancelled else { return }
 
         let wasEmpty = !conversation.hasMessages
         let now = Date.now
@@ -253,28 +260,40 @@ final class ChatEngine {
             conversation.title = ConversationTitle.derive(from: text)
         }
         conversation.updatedAt = now
-        save(modelContext)
+        modelContext.saveOrLog()
 
         // A placeholder assistant bubble the UI can show a spinner in until it's filled.
         // Nudged 1ms later so it always sorts after the user message.
         let assistant = ChatMessage(role: .assistant, createdAt: now.addingTimeInterval(0.001))
         assistant.conversation = conversation
         modelContext.insert(assistant)
-        save(modelContext)
+        modelContext.saveOrLog()
 
         isResponding = true
         defer {
             isResponding = false
-            // Skip the final save if the turn was cancelled: the conversation may have been left or
-            // deleted, so bumping `updatedAt`/saving would touch a torn-down model.
-            if !Task.isCancelled {
+            if Task.isCancelled {
+                // The turn was abandoned (view gone / thread switched or deleted). Don't bump
+                // `updatedAt` — but if no content ever arrived, remove the placeholder, or it
+                // would persist (and sync) forever as a blank bubble. Saved immediately so a
+                // process kill can't resurrect it. A partial streamed reply is kept.
+                // (`isDeleted` guards the conversation-was-cascade-deleted race.)
+                if !assistant.isDeleted, assistant.isEmptyPlaceholder {
+                    modelContext.delete(assistant)
+                    modelContext.saveOrLog()
+                }
+            } else {
                 conversation.updatedAt = .now
-                save(modelContext)
+                modelContext.saveOrLog()
             }
         }
 
+        // Re-check availability at the moment of use: the model may have finished downloading —
+        // or become unavailable — since the engine was configured.
+        refreshAvailability()
         if let availabilityMessage {
             assistant.text = availabilityMessage
+            assistant.isError = true
             return
         }
 
@@ -350,7 +369,8 @@ final class ChatEngine {
         if asImage {
             await TelemetryService.shared.recordToolCall(
                 conversationID: conversationID,
-                toolName: "generateImage",
+                // Snake_case per the coding-stats OTLP contract (`tool_name = "generate_image"`).
+                toolName: "generate_image",
                 start: start,
                 end: end
             )
@@ -393,6 +413,7 @@ final class ChatEngine {
         } catch {
             guard !Task.isCancelled else { return true }
             assistant.text = friendlyMessage(for: error)
+            assistant.isError = true
             return true
         }
     }
@@ -420,19 +441,13 @@ final class ChatEngine {
             }
             return false
         } catch {
+            // Cancellation usually surfaces here as a thrown `CancellationError`, not the loop's
+            // `isCancelled` break — don't overwrite an abandoned (possibly deleted) message's
+            // partial text with an error it never had.
+            guard !Task.isCancelled else { return true }
             assistant.text = friendlyMessage(for: error)
+            assistant.isError = true
             return true
-        }
-    }
-
-    private func save(_ context: ModelContext?) {
-        do {
-            try context?.save()
-        } catch {
-            // A save failure here is non-fatal: the in-memory objects stay correct and the
-            // next successful save persists them. Surfacing it would interrupt the chat, but a
-            // systemic schema/CloudKit fault would fail every save, so log it for diagnosis.
-            Self.logger.error("Failed to save chat context: \(error, privacy: .public)")
         }
     }
 

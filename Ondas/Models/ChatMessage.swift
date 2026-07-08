@@ -20,6 +20,11 @@ final class ChatMessage {
 
     var createdAt: Date = Date.now
 
+    /// True when this assistant message carries an app-generated error/availability notice
+    /// rather than real model output. Error turns are excluded from the rehydrated session
+    /// transcript so the model never sees them as its own words. Defaulted for CloudKit.
+    var isError: Bool = false
+
     /// The owning thread. Optional and un-annotated here; the inverse and cascade delete
     /// rule live on `Conversation.messages`.
     var conversation: Conversation? = nil

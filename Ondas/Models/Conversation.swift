@@ -53,7 +53,10 @@ final class Conversation {
     }
 
     /// True once the conversation has hit `messageLimit` and can no longer accept new turns.
+    /// Error notices don't count: they're excluded from the rehydrated transcript (see
+    /// `ChatEngine.makeTranscript`), so they consume none of the context budget this cap proxies —
+    /// a run of failed turns must not close a chat early.
     var isAtCapacity: Bool {
-        (messages ?? []).count >= Conversation.messageLimit
+        (messages ?? []).count(where: { !$0.isError }) >= Conversation.messageLimit
     }
 }

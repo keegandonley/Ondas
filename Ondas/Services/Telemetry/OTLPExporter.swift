@@ -34,10 +34,7 @@ actor OTLPExporter {
     /// oldest are dropped past this.
     private static let maxBuffered = 200
 
-    private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.keegancodes.ondas",
-        category: "OTLPExporter"
-    )
+    private static let logger = Logger(subsystem: AppInfo.bundleID, category: "OTLPExporter")
 
     init(serviceVersion: String, urlSession: URLSession = .shared) {
         self.serviceVersion = serviceVersion
@@ -73,8 +70,12 @@ actor OTLPExporter {
     /// endpoint / no key) the spans are still buffered so they can go out once configured.
     func enqueue(_ spans: [TelemetrySpan], config: TelemetryConfig) async {
         buffer.append(contentsOf: spans)
-        if buffer.count > Self.maxBuffered {
-            buffer.removeFirst(buffer.count - Self.maxBuffered)
+        // Never trim while a flush's POST is in flight: `flushOnce` relies on the buffer front
+        // being exactly the batch it snapshotted, so trimming from the front here would make its
+        // success path remove newer, never-sent spans. The active flush trims between batches
+        // instead, so an overflow during a POST is only ever transient.
+        if !isFlushing {
+            trimBuffer()
         }
         guard config.isDeliverable, let endpoint = config.endpoint, let apiKey = config.apiKey else {
             return
@@ -86,7 +87,17 @@ actor OTLPExporter {
         // next iteration, so a burst of turns still goes out under one flusher without duplication.
         while !buffer.isEmpty {
             let delivered = await flushOnce(endpoint: endpoint, apiKey: apiKey)
+            // Safe between batches — no snapshot is outstanding.
+            trimBuffer()
             if !delivered { break }
+        }
+    }
+
+    /// Drops the oldest spans past `maxBuffered`. Must not run while a `flushOnce` snapshot is
+    /// outstanding (see `enqueue`).
+    private func trimBuffer() {
+        if buffer.count > Self.maxBuffered {
+            buffer.removeFirst(buffer.count - Self.maxBuffered)
         }
     }
 
@@ -97,12 +108,16 @@ actor OTLPExporter {
         guard config.isDeliverable, let endpoint = config.endpoint, let apiKey = config.apiKey else {
             return false
         }
-        let body: Data
-        do {
-            body = try Self.encode(spans, serviceVersion: serviceVersion)
-        } catch {
+        guard let body = try? Self.encode(spans, serviceVersion: serviceVersion) else {
             return false
         }
+        return await post(body, endpoint: endpoint, apiKey: apiKey)
+    }
+
+    /// POSTs an encoded OTLP payload to the collector's traces route, reporting whether it was
+    /// accepted (2xx). Failures (transport or status) are logged at debug and reported as `false`;
+    /// the callers decide whether that means retry-later (`flushOnce`) or a failed test (`deliver`).
+    private func post(_ body: Data, endpoint: URL, apiKey: String) async -> Bool {
         var request = URLRequest(url: endpoint.appendingPathComponent("v1/traces"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -110,9 +125,12 @@ actor OTLPExporter {
         request.httpBody = body
         do {
             let (_, response) = try await urlSession.data(for: request)
-            guard let http = response as? HTTPURLResponse else { return false }
-            return (200..<300).contains(http.statusCode)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                return false
+            }
+            return true
         } catch {
+            Self.logger.debug("Telemetry POST failed: \(error, privacy: .public)")
             return false
         }
     }
@@ -135,27 +153,12 @@ actor OTLPExporter {
             return true
         }
 
-        var request = URLRequest(url: endpoint.appendingPathComponent("v1/traces"))
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.httpBody = body
-
-        do {
-            let (_, response) = try await urlSession.data(for: request)
-            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-                // Non-2xx (e.g. bad key): keep buffered for a later retry.
-                return false
-            }
-            // Remove only what we sent — new spans may have been appended during the await, and
-            // the buffer is FIFO so the delivered ones are at the front.
-            buffer.removeFirst(min(pending.count, buffer.count))
-            return true
-        } catch {
-            // Network error: keep buffered.
-            Self.logger.debug("Telemetry POST failed, will retry: \(error, privacy: .public)")
-            return false
-        }
+        // On failure (transport or non-2xx, e.g. a bad key) the spans stay buffered for a later retry.
+        guard await post(body, endpoint: endpoint, apiKey: apiKey) else { return false }
+        // Remove only what we sent — new spans may have been appended during the await, and
+        // the buffer is FIFO so the delivered ones are at the front.
+        buffer.removeFirst(min(pending.count, buffer.count))
+        return true
     }
 
     /// Builds the OTLP/HTTP JSON `resourceSpans` payload. Static + internal so the wire format can be

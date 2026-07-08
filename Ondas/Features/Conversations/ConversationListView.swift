@@ -86,8 +86,9 @@ struct ConversationListView: View {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return conversations }
         return conversations.filter { conversation in
+            // Membership doesn't care about order — skip `orderedMessages`' sort.
             conversation.title.localizedCaseInsensitiveContains(query)
-                || conversation.orderedMessages.contains {
+                || (conversation.messages ?? []).contains {
                     $0.text.localizedCaseInsensitiveContains(query)
                 }
         }
@@ -110,9 +111,15 @@ struct ConversationListView: View {
     }
 
     private func startNewConversation() {
+        // Reuse an existing empty thread rather than accumulating "New Chat" rows that would
+        // sync to CloudKit; repeated taps (or the capacity banner) then converge on one draft.
+        if let empty = conversations.first(where: { !$0.hasMessages }) {
+            selectedConversationID = empty.id
+            return
+        }
         let conversation = Conversation()
         modelContext.insert(conversation)
-        try? modelContext.save()
+        modelContext.saveOrLog()
         selectedConversationID = conversation.id
     }
 
@@ -136,7 +143,7 @@ struct ConversationListView: View {
         }
         Task { @MainActor in
             modelContext.delete(conversation)
-            try? modelContext.save()
+            modelContext.saveOrLog()
         }
     }
 }

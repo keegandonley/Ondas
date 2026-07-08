@@ -19,10 +19,7 @@ final class CloudKitSyncMonitor {
     /// first one completes. In-progress events (`endDate == nil`) are ignored.
     private(set) var status: String?
 
-    private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "com.keegancodes.ondas",
-        category: "CloudKitSync"
-    )
+    private static let logger = Logger(subsystem: AppInfo.bundleID, category: "CloudKitSync")
 
     private var isObserving = false
 

@@ -94,3 +94,9 @@ schemes:
         - OndasTests
     run:
       config: Debug
+      # Core Data's CloudKit mirroring only reports a coarse top-level error via
+      # NSPersistentCloudKitContainerEvent (e.g. bare "CKErrorDomain error 2" with no
+      # partialErrorsByItemID payload) — this is Apple's documented flag for verbose
+      # per-record sync logging in Console, needed to see the actual failing record/field.
+      commandLineArguments:
+        "-com.apple.CoreData.CloudKitDebug 1": true

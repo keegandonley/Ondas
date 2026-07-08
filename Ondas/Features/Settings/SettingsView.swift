@@ -25,13 +25,11 @@ struct SettingsView: View {
 
     /// The config assembled from the current (possibly unsaved) fields, for the test button.
     private var draftConfig: TelemetryConfig {
-        let trimmedEndpoint = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        return TelemetryConfig(
+        TelemetryConfig(
             isEnabled: isEnabled,
             sendTranscripts: sendTranscripts,
-            endpoint: trimmedEndpoint.isEmpty ? nil : URL(string: trimmedEndpoint),
-            apiKey: trimmedKey.isEmpty ? nil : trimmedKey
+            endpointField: endpoint,
+            apiKeyField: apiKey
         )
     }
 
@@ -115,10 +113,13 @@ struct SettingsView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done", action: saveAndDismiss)
+                    Button("Done", action: dismiss.callAsFunction)
                 }
             }
             .onAppear(perform: load)
+            // Save on *any* dismissal — Done and an interactive swipe-down behave the same, so
+            // edits (e.g. a freshly pasted API key) are never silently discarded.
+            .onDisappear(perform: save)
         }
     }
 
@@ -131,7 +132,7 @@ struct SettingsView: View {
         responseStyle = generationSettings.load()
     }
 
-    private func saveAndDismiss() {
+    private func save() {
         generationSettings.save(responseStyle)
         store.save(
             isEnabled: isEnabled,
@@ -141,7 +142,6 @@ struct SettingsView: View {
         )
         let config = store.currentConfig()
         Task { await TelemetryService.shared.update(config) }
-        dismiss()
     }
 
     private func sendTest() {

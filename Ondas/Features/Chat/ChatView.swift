@@ -5,6 +5,7 @@ import SwiftUI
 /// bottom. Owns the `ChatEngine` that talks to the on-device model.
 struct ChatView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.scenePhase) private var scenePhase
 
     let conversation: Conversation
 
@@ -57,6 +58,14 @@ struct ChatView: View {
             // thread that's no longer on screen.
             engine.cancelActiveTurn()
         }
+        .onChange(of: scenePhase) {
+            // Availability can change while backgrounded (e.g. the model finished downloading,
+            // or Apple Intelligence was toggled in Settings) — re-check on return so the banner
+            // reflects reality without waiting for a conversation switch.
+            if scenePhase == .active {
+                engine.refreshAvailability()
+            }
+        }
         // A light tap when the user sends; a soft tap when a reply completes, an error tap when
         // the turn failed. Haptics are a no-op on devices without a Taptic Engine (iPad/Catalyst).
         .sensoryFeedback(.impact(weight: .light), trigger: sentCount)
@@ -67,14 +76,17 @@ struct ChatView: View {
     }
 
     private var transcript: some View {
-        ScrollViewReader { proxy in
+        // Sort once per body evaluation: streamed tokens re-evaluate this view constantly and
+        // `orderedMessages` re-sorts on every access, so the several uses below share this copy.
+        let messages = conversation.orderedMessages
+        return ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 12) {
-                    ForEach(conversation.orderedMessages) { message in
+                    ForEach(messages) { message in
                         MessageBubble(
                             message: message,
                             isAwaitingResponse: engine.isResponding && message.isEmptyPlaceholder,
-                            isStreaming: isStreaming(message)
+                            isStreaming: isStreaming(message, latest: messages.last)
                         )
                         .id(message.id)
                         .transition(.messageInsertion)
@@ -86,7 +98,7 @@ struct ChatView: View {
                 // animating every token update as the last message streams.
                 .animation(
                     .spring(response: 0.35, dampingFraction: 0.85),
-                    value: conversation.orderedMessages.count
+                    value: messages.count
                 )
                 // Anchor used to keep the newest message in view as the transcript grows.
                 Color.clear.frame(height: 1).id(bottomAnchorID)
@@ -117,13 +129,13 @@ struct ChatView: View {
                     .allowsHitTesting(showJumpButton)
                     .animation(.easeInOut(duration: 0.2), value: showJumpButton)
             }
-            .onChange(of: conversation.orderedMessages.count) {
+            .onChange(of: messages.count) {
                 // A new message (the user's send, then the reply placeholder): snap to it and
                 // resume following the generation.
                 autoScroll = true
                 scrollToBottom(proxy)
             }
-            .onChange(of: lastMessageText) {
+            .onChange(of: messages.last?.text ?? "") {
                 // Follow streamed/late-arriving text only while auto-scroll is engaged. Unanimated
                 // to stay glued smoothly to the growing text rather than stuttering per token.
                 if autoScroll { scrollToBottom(proxy, animated: false) }
@@ -154,11 +166,12 @@ struct ChatView: View {
     }
 
     /// True while `message` is the in-flight assistant reply currently receiving streamed text.
-    private func isStreaming(_ message: ChatMessage) -> Bool {
+    /// `latest` is passed in so the caller's already-sorted copy is reused.
+    private func isStreaming(_ message: ChatMessage, latest: ChatMessage?) -> Bool {
         engine.isResponding
             && message.role == .assistant
             && !message.text.isEmpty
-            && message.id == conversation.latestMessage?.id
+            && message.id == latest?.id
     }
 
     /// The button offers a way back to the latest message once the user has scrolled well clear
@@ -303,12 +316,6 @@ struct ChatView: View {
             && !engine.isResponding
             && engine.availabilityMessage == nil
             && !engine.isAtCapacity
-    }
-
-    /// The last message's text, observed so streamed/late-arriving replies re-trigger a
-    /// scroll to the bottom.
-    private var lastMessageText: String {
-        conversation.latestMessage?.text ?? ""
     }
 
     private let bottomAnchorID = "bottom-anchor"

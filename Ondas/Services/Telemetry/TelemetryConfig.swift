@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 import Security
 
 /// An immutable snapshot of the user's telemetry preferences, safe to hand to the telemetry actor.
@@ -24,6 +25,24 @@ struct TelemetryConfig: Sendable, Equatable {
     )
 }
 
+extension TelemetryConfig {
+    /// Builds a config from raw user-entered field values, normalizing them the single way the
+    /// app does it (trim; blank means absent). Shared by the persisted settings
+    /// (`TelemetrySettingsStore.currentConfig`) and the Settings screen's unsaved draft, so the
+    /// test button exercises exactly what saving would produce. Lives in an extension so the
+    /// memberwise init stays available.
+    init(isEnabled: Bool, sendTranscripts: Bool, endpointField: String, apiKeyField: String) {
+        let trimmedEndpoint = endpointField.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedKey = apiKeyField.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.init(
+            isEnabled: isEnabled,
+            sendTranscripts: sendTranscripts,
+            endpoint: trimmedEndpoint.isEmpty ? nil : URL(string: trimmedEndpoint),
+            apiKey: trimmedKey.isEmpty ? nil : trimmedKey
+        )
+    }
+}
+
 /// A minimal secret store so the telemetry key can live in the Keychain in the app while tests
 /// substitute an in-memory implementation (the Keychain is unavailable/flaky in the unit-test host).
 protocol SecretStore: Sendable {
@@ -34,6 +53,8 @@ protocol SecretStore: Sendable {
 /// Keychain-backed `SecretStore` scoped to a single generic-password service (the bundle id).
 struct KeychainSecretStore: SecretStore {
     let service: String
+
+    private static let logger = Logger(subsystem: AppInfo.bundleID, category: "Keychain")
 
     private func baseQuery(_ account: String) -> [String: Any] {
         [
@@ -59,18 +80,27 @@ struct KeychainSecretStore: SecretStore {
 
     func setSecret(_ value: String?, forKey account: String) {
         let query = baseQuery(account)
-        // Empty/nil clears the stored secret rather than storing a blank one.
+        // Empty/nil clears the stored secret rather than storing a blank one. Deleting a secret
+        // that was never stored is a normal no-op, not a failure.
         guard let value, !value.isEmpty else {
-            SecItemDelete(query as CFDictionary)
+            let status = SecItemDelete(query as CFDictionary)
+            if status != errSecSuccess, status != errSecItemNotFound {
+                Self.logger.error("Keychain delete failed for \(account, privacy: .public): \(status)")
+            }
             return
         }
         let data = Data(value.utf8)
         let update = [kSecValueData as String: data] as CFDictionary
-        let status = SecItemUpdate(query as CFDictionary, update)
+        var status = SecItemUpdate(query as CFDictionary, update)
         if status == errSecItemNotFound {
             var insert = query
             insert[kSecValueData as String] = data
-            SecItemAdd(insert as CFDictionary, nil)
+            status = SecItemAdd(insert as CFDictionary, nil)
+        }
+        // A silent failure here would mean the user's key evaporates on next launch and telemetry
+        // quietly stops — make it visible in the log.
+        if status != errSecSuccess {
+            Self.logger.error("Keychain write failed for \(account, privacy: .public): \(status)")
         }
     }
 }
@@ -92,9 +122,7 @@ struct TelemetrySettingsStore {
 
     init(
         defaults: UserDefaults = .standard,
-        secrets: SecretStore = KeychainSecretStore(
-            service: Bundle.main.bundleIdentifier ?? "com.keegancodes.ondas"
-        )
+        secrets: SecretStore = KeychainSecretStore(service: AppInfo.bundleID)
     ) {
         self.defaults = defaults
         self.secrets = secrets
@@ -121,13 +149,11 @@ struct TelemetrySettingsStore {
     /// The immutable snapshot to hand to `TelemetryService`.
     func currentConfig() -> TelemetryConfig {
         let values = load()
-        let trimmedEndpoint = values.endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedKey = values.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         return TelemetryConfig(
             isEnabled: values.isEnabled,
             sendTranscripts: values.sendTranscripts,
-            endpoint: trimmedEndpoint.isEmpty ? nil : URL(string: trimmedEndpoint),
-            apiKey: trimmedKey.isEmpty ? nil : trimmedKey
+            endpointField: values.endpoint,
+            apiKeyField: values.apiKey
         )
     }
 }

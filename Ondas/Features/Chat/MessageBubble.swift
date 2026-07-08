@@ -67,10 +67,13 @@ struct MessageBubble: View {
     @ViewBuilder
     private var messageText: some View {
         if isStreaming {
+            // Parse the markdown once out here — the timeline closure re-runs every blink tick,
+            // and only the caret changes between ticks, not the text.
+            let rendered = renderedText
             TimelineView(.periodic(from: .now, by: Self.caretBlinkInterval)) { context in
                 let tick = Int(context.date.timeIntervalSinceReferenceDate / Self.caretBlinkInterval)
                 let caret = tick.isMultiple(of: 2) ? " ▍" : ""
-                Text("\(renderedText)\(Text(verbatim: caret))")
+                Text("\(rendered)\(Text(verbatim: caret))")
             }
         } else {
             renderedText

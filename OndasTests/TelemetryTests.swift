@@ -44,6 +44,27 @@ struct TelemetryTests {
         #expect(!TelemetryConfig.disabled.isDeliverable)
     }
 
+    @Test func configFieldInitTrimsAndTreatsBlankAsAbsent() {
+        let config = TelemetryConfig(
+            isEnabled: true,
+            sendTranscripts: false,
+            endpointField: "  https://example.com/api/otlp  ",
+            apiKeyField: "  otlp_key  "
+        )
+        #expect(config.endpoint == URL(string: "https://example.com/api/otlp"))
+        #expect(config.apiKey == "otlp_key")
+
+        let blank = TelemetryConfig(
+            isEnabled: true,
+            sendTranscripts: false,
+            endpointField: "   ",
+            apiKeyField: ""
+        )
+        #expect(blank.endpoint == nil)
+        #expect(blank.apiKey == nil)
+        #expect(!blank.isDeliverable)
+    }
+
     // MARK: Wire helpers
 
     @Test func traceIdIsDeterministic32HexCharsFromConversationUUID() {
