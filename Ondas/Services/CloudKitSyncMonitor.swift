@@ -1,3 +1,4 @@
+import CloudKit
 import CoreData
 import Foundation
 import Observation
@@ -43,9 +44,10 @@ final class CloudKitSyncMonitor {
             // Pull out plain Sendable values here rather than hopping to the main actor with the
             // `NSPersistentCloudKitContainer.Event` itself, which isn't `Sendable`.
             let type = Self.label(for: event.type)
-            let errorDescription = event.error?.localizedDescription
+            let succeeded = event.succeeded
+            let errorDescription = event.error.map(Self.describe)
             Task { @MainActor [weak self] in
-                self?.handle(type: type, errorDescription: errorDescription)
+                self?.handle(type: type, succeeded: succeeded, errorDescription: errorDescription)
             }
         }
     }
@@ -63,13 +65,35 @@ final class CloudKitSyncMonitor {
         }
     }
 
-    private func handle(type: String, errorDescription: String?) {
-        if let errorDescription {
-            Self.logger.error("CloudKit \(type, privacy: .public) failed: \(errorDescription, privacy: .public)")
-            status = "Sync error (\(type)): \(errorDescription)"
-        } else {
-            Self.logger.info("CloudKit \(type, privacy: .public) succeeded")
-            status = "Up to date (last \(type))"
+    /// `error.localizedDescription` alone is close to useless for a `CKError.Code.partialFailure`
+    /// (code 2) — it's a *container* error, and the actual per-record reason lives in
+    /// `CKError.partialErrorsByItemID`. Unwrap it so the real cause (e.g. a specific record's
+    /// constraint violation or quota error) shows up instead of the generic top-level message.
+    private nonisolated static func describe(_ error: Error) -> String {
+        guard let ckError = error as? CKError,
+              let partialErrors = ckError.partialErrorsByItemID,
+              !partialErrors.isEmpty
+        else {
+            return (error as NSError).localizedDescription
         }
+        // Multiple records commonly fail for the same underlying reason; de-duplicate before joining.
+        let reasons = Set(partialErrors.values.map { ($0 as NSError).localizedDescription })
+        return "partial failure — " + reasons.sorted().joined(separator: "; ")
+    }
+
+    /// `succeeded` and `error` are independent fields on `NSPersistentCloudKitContainerEvent` — a
+    /// failed event isn't guaranteed to carry an `NSError` (e.g. an account/permission change can
+    /// end a sync with `succeeded == false` and no error object). Branch on `succeeded` rather than
+    /// on error-presence so that case is still reported as a failure instead of silently reading as
+    /// success.
+    private func handle(type: String, succeeded: Bool, errorDescription: String?) {
+        guard succeeded else {
+            let reason = errorDescription ?? "no error details provided"
+            Self.logger.error("CloudKit \(type, privacy: .public) failed: \(reason, privacy: .public)")
+            status = "Sync error (\(type)): \(reason)"
+            return
+        }
+        Self.logger.info("CloudKit \(type, privacy: .public) succeeded")
+        status = "Up to date (last \(type))"
     }
 }
