@@ -7,6 +7,13 @@ struct OndasApp: App {
     /// with no account or sign-up.
     private let modelContainer = AppModelContainer.make()
 
+    init() {
+        // Load the user's saved telemetry preference (off by default) into the shared service so any
+        // model usage this session can be reported. Fire-and-forget: the actor updates itself.
+        let config = TelemetrySettingsStore().currentConfig()
+        Task { await TelemetryService.shared.update(config) }
+    }
+
     var body: some Scene {
         WindowGroup {
             ConversationListView()

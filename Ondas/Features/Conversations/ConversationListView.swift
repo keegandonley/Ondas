@@ -12,6 +12,7 @@ struct ConversationListView: View {
 
     @State private var selectedConversationID: UUID?
     @State private var searchText = ""
+    @State private var showingSettings = false
 
     var body: some View {
         NavigationSplitView {
@@ -19,6 +20,23 @@ struct ConversationListView: View {
                 ForEach(filteredConversations) { conversation in
                     NavigationLink(value: conversation.id) {
                         ConversationRow(conversation: conversation)
+                    }
+                    // Right-click (Mac Catalyst) / long-press (iOS) delete, plus an explicit
+                    // trailing swipe. Mac Catalyst has no swipe-to-delete, so the context menu is
+                    // the primary path there.
+                    .contextMenu {
+                        Button(role: .destructive) {
+                            delete(conversation)
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+                    }
+                    .swipeActions(edge: .trailing) {
+                        Button(role: .destructive) {
+                            delete(conversation)
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
                     }
                 }
                 .onDelete(perform: deleteConversations)
@@ -31,11 +49,21 @@ struct ConversationListView: View {
                         Label("New Chat", systemImage: "square.and.pencil")
                     }
                 }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        showingSettings = true
+                    } label: {
+                        Label("Settings", systemImage: "gearshape")
+                    }
+                }
             }
             .overlay {
                 if conversations.isEmpty {
                     emptyState
                 }
+            }
+            .sheet(isPresented: $showingSettings) {
+                SettingsView()
             }
         } detail: {
             if let conversation = selectedConversation {
@@ -92,14 +120,24 @@ struct ConversationListView: View {
         // Offsets index into the same array the ForEach renders (`filteredConversations`),
         // not the unfiltered query — otherwise a search would delete the wrong rows.
         let visible = filteredConversations
-        for index in offsets {
-            let conversation = visible[index]
-            if conversation.id == selectedConversationID {
-                selectedConversationID = nil
-            }
-            modelContext.delete(conversation)
+        offsets.map { visible[$0] }.forEach(delete)
+    }
+
+    /// Deletes a conversation from the context menu, swipe action, or edit control.
+    ///
+    /// If it's the open conversation, the selection is cleared *first* and the actual delete is
+    /// deferred to the next main-actor hop. Deleting a model while the `NavigationSplitView` detail
+    /// still shows it makes SwiftUI read the now-invalidated object (e.g. `navigationTitle`) and
+    /// crash — notably on Mac Catalyst. Clearing selection this cycle tears the detail down before
+    /// the object goes away.
+    private func delete(_ conversation: Conversation) {
+        if conversation.id == selectedConversationID {
+            selectedConversationID = nil
         }
-        try? modelContext.save()
+        Task { @MainActor in
+            modelContext.delete(conversation)
+            try? modelContext.save()
+        }
     }
 }
 

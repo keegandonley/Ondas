@@ -1,4 +1,3 @@
-import FoundationModels
 import Foundation
 import Testing
 @testable import Ondas
@@ -30,43 +29,26 @@ struct OndasTests {
         #expect(ConversationTitle.derive(from: "   ") == Conversation.defaultTitle)
     }
 
-    // MARK: ImageGenerationTool.Arguments decoding
+    // MARK: ImageCommand parsing
 
-    /// The model fills the tool's arguments as `GeneratedContent`; confirm the `@Generable`
-    /// struct decodes the `prompt` property the tool relies on.
-    @Test func decodesPromptArgumentFromGeneratedContent() throws {
-        let content = GeneratedContent(properties: ["prompt": "a red bicycle on a beach"])
-        let arguments = try ImageGenerationTool.Arguments(content)
-        #expect(arguments.prompt == "a red bicycle on a beach")
+    @Test func imageCommandExtractsPromptAfterToken() {
+        #expect(ImageCommand.prompt(in: "/image a cat on a beach") == "a cat on a beach")
     }
 
-    // MARK: GeneratedImageCollector plumbing
-
-    /// `take()` returns the stored image once and then clears it, so a later turn starts empty.
-    @Test func collectorReturnsStoredImageOnceThenClears() async {
-        let collector = GeneratedImageCollector()
-        let bytes = Data([0x01, 0x02, 0x03])
-
-        await collector.store(bytes)
-        #expect(await collector.take() == bytes)
-        #expect(await collector.take() == nil)
+    @Test func imageCommandIsCaseInsensitiveAndTrims() {
+        #expect(ImageCommand.prompt(in: "/IMAGE   a red bike ") == "a red bike")
     }
 
-    /// The most recent image wins if the model calls the tool more than once in a turn, since a
-    /// `ChatMessage` holds a single image.
-    @Test func collectorKeepsMostRecentImage() async {
-        let collector = GeneratedImageCollector()
-        await collector.store(Data([0xAA]))
-        await collector.store(Data([0xBB]))
-        #expect(await collector.take() == Data([0xBB]))
+    @Test func imageCommandEmptyPromptWhenJustTokenAndSpace() {
+        // Typing "/image " (token + space) enters image mode with an empty prompt.
+        #expect(ImageCommand.prompt(in: "/image ") == "")
     }
 
-    /// `reset()` drops any leftover image before a turn begins.
-    @Test func collectorResetClearsPendingImage() async {
-        let collector = GeneratedImageCollector()
-        await collector.store(Data([0xFF]))
-        await collector.reset()
-        #expect(await collector.take() == nil)
+    @Test func imageCommandRequiresTokenThenSpace() {
+        // Bare token (still typing) and non-command text are not the command.
+        #expect(ImageCommand.prompt(in: "/image") == nil)
+        #expect(ImageCommand.prompt(in: "/imagex cat") == nil)
+        #expect(ImageCommand.prompt(in: "draw a cat") == nil)
     }
 
     // MARK: TokenUsage

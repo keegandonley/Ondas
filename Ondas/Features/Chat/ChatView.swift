@@ -18,6 +18,10 @@ struct ChatView: View {
     /// Increments on each send, driving the send-button symbol bounce and the send haptic.
     @State private var sentCount = 0
 
+    /// True when the composer is in image mode — entered by typing the `/image` command, shown as a
+    /// highlighted chip. The next send is an explicit image request; `draft` holds just the prompt.
+    @State private var isImageMode = false
+
     /// Whether the transcript follows streamed text to the bottom. Engaged by default and while the
     /// user sits at the bottom; released the moment the user scrolls away, and re-engaged when they
     /// scroll all the way back down.
@@ -230,20 +234,27 @@ struct ChatView: View {
 
     private var composer: some View {
         HStack(alignment: .bottom, spacing: 10) {
-            TextField("Message", text: $draft, axis: .vertical)
-                .textFieldStyle(.plain)
-                .lineLimit(1...6)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 9)
-                .background(Theme.assistantBubble, in: Capsule())
-                .focused($isComposerFocused)
-                .disabled(engine.isAtCapacity)
-                .onSubmit(send)
+            HStack(alignment: .center, spacing: 6) {
+                if isImageMode {
+                    imageModeChip
+                }
+                TextField(isImageMode ? "Describe the image…" : "Message", text: $draft, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .lineLimit(1...6)
+                    .focused($isComposerFocused)
+                    .onSubmit(send)
+                    .onChange(of: draft) { enterImageModeIfCommanded() }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            .background(Theme.assistantBubble, in: Capsule())
+            .disabled(engine.isAtCapacity)
 
             Button(action: send) {
-                Image(systemName: "arrow.up.circle.fill")
+                Image(systemName: isImageMode ? "sparkles" : "arrow.up.circle.fill")
                     .font(.system(size: 32))
                     .symbolRenderingMode(.hierarchical)
+                    .contentTransition(.symbolEffect(.replace))
                     .symbolEffect(.bounce, value: sentCount)
             }
             .disabled(!canSend)
@@ -251,6 +262,40 @@ struct ChatView: View {
         .padding(.horizontal)
         .padding(.vertical, 10)
         .background(.bar)
+        .animation(.snappy(duration: 0.2), value: isImageMode)
+    }
+
+    /// A highlighted pill shown at the head of the composer while in `/image` mode. Tapping it
+    /// cancels image mode and returns to a plain message.
+    private var imageModeChip: some View {
+        Button {
+            withAnimation(.snappy(duration: 0.2)) { isImageMode = false }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "photo")
+                Text("Image")
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .opacity(0.8)
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.white)
+            .padding(.leading, 8)
+            .padding(.trailing, 6)
+            .padding(.vertical, 4)
+            .background(Theme.userBubble, in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .transition(.scale.combined(with: .opacity))
+        .accessibilityLabel("Image command active. Activate to cancel.")
+    }
+
+    /// Detects the `/image ` command as the user types and converts it into image mode: the token
+    /// is lifted out of the field into the chip, leaving just the prompt behind.
+    private func enterImageModeIfCommanded() {
+        guard !isImageMode, let prompt = ImageCommand.prompt(in: draft) else { return }
+        withAnimation(.snappy(duration: 0.2)) { isImageMode = true }
+        draft = prompt
     }
 
     private var canSend: Bool {
@@ -270,10 +315,12 @@ struct ChatView: View {
 
     private func send() {
         let outgoing = draft
+        let asImage = isImageMode
         guard canSend else { return }
         draft = ""
+        isImageMode = false
         sentCount += 1
-        engine.submit(outgoing)
+        engine.submit(outgoing, asImage: asImage)
     }
 
     private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) {

@@ -32,16 +32,17 @@ struct TurnSignal: Equatable {
 /// Drives one conversation: sends user messages to the on-device language model and persists
 /// both sides of the exchange to SwiftData (which syncs via CloudKit).
 ///
-/// Image generation is the model's own decision: an `ImageGenerationTool` is registered on the
-/// live `LanguageModelSession`, so when the user asks for a picture the model calls the tool,
-/// the tool produces the image, and the model writes a genuine natural-language reply about it.
-/// There is no out-of-model intent classifier or acknowledgment reframing — the model knows an
-/// image was made because it made it.
+/// Image generation is an explicit, model-free path: when the user sends the `/image` command
+/// (`asImage`), the engine calls `ImageGenerator` directly, attaches the picture, and writes no
+/// text — the language model never runs on an image turn. This is deterministic and sidesteps every
+/// failure the model showed when it was in the loop for images (over-triggering on bare nouns,
+/// refusing genuine requests, and narrating or hallucinating base64/markdown alongside a real
+/// image). Plain messages run through the model as normal text turns.
 ///
 /// Lives on the main actor and orchestrates every step sequentially, so all SwiftData mutation
-/// happens on the main context and there is no cross-actor state to guard. The one value that
-/// crosses actors — image bytes produced inside the off-main-actor tool call — comes back
-/// through the `Sendable` `GeneratedImageCollector`.
+/// happens on the main context and there is no cross-actor state to guard. Image bytes come back
+/// from `ImageGenerator` (which does its work off the main actor) as a plain `Sendable` `Data`
+/// value the engine simply awaits and assigns.
 ///
 /// A `LanguageModelSession` holds the in-memory chat context. It is rebuilt when the engine is
 /// pointed at a different conversation, rehydrating the model's working memory from the
@@ -73,11 +74,6 @@ final class ChatEngine {
     private var modelContext: ModelContext?
     private var session: LanguageModelSession?
 
-    /// Drains images the `ImageGenerationTool` produces during a `respond` turn. Paired with
-    /// `session` (both are rebuilt together in `makeSession`) since the tool holds this same
-    /// collector.
-    private var imageCollector: GeneratedImageCollector?
-
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.keegancodes.ondas",
         category: "ChatEngine"
@@ -97,15 +93,9 @@ final class ChatEngine {
     private static let chatInstructionsText =
         """
         You are Ondas, a helpful and friendly assistant that runs entirely on the user's
-        device. Answer conversationally and concisely, in text.
+        device. Answer conversationally and concisely, in text. Always respond to the user's most
+        recent message; never repeat one of your earlier replies.
 
-        Only call the generateImage tool when the user explicitly asks you to create, draw,
-        generate, or make a picture or other visual — or clearly accepts an image you just
-        offered. Never call it for informational questions, facts, definitions, or ordinary
-        conversation, even when the subject is a place, person, or object that could be
-        pictured. For example, "what's the capital of Texas" is a plain text answer, not an
-        image. When in doubt, answer with text. After you do generate an image, reply
-        naturally about the image you made rather than saying you can't create images.
         """
 
     /// Points the engine at `conversation`, rebuilding the model session only when the
@@ -116,38 +106,24 @@ final class ChatEngine {
             // Abandon any turn still streaming into the previous conversation before switching.
             cancelActiveTurn()
             self.conversation = conversation
-            let (newSession, collector) = Self.makeSession(for: conversation)
-            session = newSession
-            imageCollector = collector
+            session = Self.makeSession(for: conversation.orderedMessages)
         }
         refreshAvailability()
         await refreshTokenUsage()
     }
 
-    /// Builds the session for `conversation`, rehydrating the model's working memory from the
-    /// persisted transcript so context survives app relaunches and thread switches, and
-    /// registering the image-generation tool. A brand-new thread starts from a blank
-    /// instructions-only session. Returns the collector the tool writes into so the engine can
-    /// drain it after each turn.
-    private static func makeSession(for conversation: Conversation) -> (LanguageModelSession, GeneratedImageCollector) {
-        let collector = GeneratedImageCollector()
-        let tool = ImageGenerationTool(collector: collector)
-        let history = conversation.orderedMessages
-
-        let session: LanguageModelSession
+    /// Builds the conversation's text session, rehydrated from `history` so context survives
+    /// relaunches and thread switches. There is no image tool: image generation is handled directly
+    /// by the engine on `/image` turns and never involves the model. A brand-new thread starts from
+    /// a blank instructions-only session.
+    private static func makeSession(for history: [ChatMessage]) -> LanguageModelSession {
         if history.isEmpty {
-            session = LanguageModelSession(
-                tools: [tool],
-                instructions: Instructions(chatInstructionsText)
-            )
-        } else {
-            session = LanguageModelSession(
-                model: SystemLanguageModel.default,
-                tools: [tool],
-                transcript: makeTranscript(from: history)
-            )
+            return LanguageModelSession(instructions: Instructions(chatInstructionsText))
         }
-        return (session, collector)
+        return LanguageModelSession(
+            model: SystemLanguageModel.default,
+            transcript: makeTranscript(from: history)
+        )
     }
 
     /// Reconstructs a `Transcript` from stored messages: a leading instructions entry (so the
@@ -188,13 +164,13 @@ final class ChatEngine {
         return Transcript(entries: entries)
     }
 
-    /// The text used to represent a message inside the rehydrated transcript. Generated images
-    /// carry no language content of their own, so stand in a short note (using the caption when
-    /// present) that keeps the model aware an image was produced for follow-up references.
+    /// The text used to represent a message inside the rehydrated transcript. Generated images carry
+    /// no language content of their own, so an image turn is represented by its natural caption (or a
+    /// plain fallback) — this still tells the model an image was produced, without a bracketed
+    /// annotation the model would echo back verbatim as a reply on the next turn.
     private static func seededContent(for message: ChatMessage) -> String {
         if message.role == .assistant, message.hasImage {
-            let caption = message.text.isEmpty ? "" : " (\(message.text))"
-            return "[Generated an image for the user's request.\(caption)]"
+            return message.text.isEmpty ? "I created an image for you." : message.text
         }
         return message.text
     }
@@ -243,8 +219,10 @@ final class ChatEngine {
 
     /// Starts a turn as a tracked task so it can be cancelled if the user leaves the conversation.
     /// The composer disables itself while `isResponding`, so there is only ever one active turn.
-    func submit(_ raw: String) {
-        activeTurn = Task { [weak self] in await self?.send(raw) }
+    /// `asImage` is true when the user sent the `/image` command, which is the only thing that gives
+    /// the turn the image tool.
+    func submit(_ raw: String, asImage: Bool) {
+        activeTurn = Task { [weak self] in await self?.send(raw, asImage: asImage) }
     }
 
     /// Cancels the in-flight turn (if any). The streaming loop checks `Task.isCancelled` and stops
@@ -257,8 +235,8 @@ final class ChatEngine {
 
     /// Appends the user's message, then a model reply — which may include a tool-generated image
     /// — saving after each step so a mid-flight termination still leaves a coherent transcript.
-    func send(_ raw: String) async {
-        guard let conversation, let modelContext, let session, let imageCollector else { return }
+    func send(_ raw: String, asImage: Bool) async {
+        guard let conversation, let modelContext else { return }
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         // A full chat is closed to new turns — the UI reflects this, but guard defensively so a
         // late send (e.g. an in-flight submit) can't push past the token/message cap.
@@ -299,34 +277,119 @@ final class ChatEngine {
             return
         }
 
-        let failed = await respond(to: text, session: session, collector: imageCollector, into: assistant)
+        // An `/image` turn generates directly with no model involvement; a plain turn streams a
+        // text reply from the model. Either way `failed` picks the completion vs error haptic.
+        let failed: Bool
+        if asImage {
+            failed = await generateImage(prompt: text, into: assistant)
+        } else if let session {
+            failed = await respond(to: text, session: session, into: assistant)
+        } else {
+            return
+        }
         // Re-enable the composer as soon as the reply lands; the token refresh below updates the
-        // meter and cap without making the user wait on a second model call. (The defer resets
-        // this too, so every exit path is covered.)
+        // meter and cap without making the user wait. (The defer resets this too, so every exit
+        // path is covered.)
         isResponding = false
         // The user navigated away mid-reply; don't refresh the meter or fire a completion haptic
         // for a conversation that's no longer on screen.
         guard !Task.isCancelled else { return }
-        // The turn changed the session transcript; refresh the meter and token-based cap.
+        // A text turn changed the session transcript; refresh the meter and token-based cap. (An
+        // image turn leaves the transcript untouched, but refreshing is harmless.)
         await refreshTokenUsage()
         // Signal the finished turn so the view can play a completion (or error) haptic.
         turnCounter += 1
         lastTurn = TurnSignal(id: turnCounter, failed: failed)
+
+        // Best-effort usage telemetry (metrics only — never message content), off unless the user
+        // enabled it in Settings. Only successful turns are reported. Detached and snapshotting the
+        // values first so it never delays the turn's teardown.
+        if !failed {
+            let conversationID = conversation.id
+            let assistantText = assistant.text
+            let usedTokens = tokenUsage?.used
+            let end = Date.now
+            Task { [weak self] in
+                await self?.recordTelemetry(
+                    conversationID: conversationID,
+                    asImage: asImage,
+                    assistantText: assistantText,
+                    usedTokens: usedTokens,
+                    start: now,
+                    end: end
+                )
+            }
+        }
     }
 
-    /// Runs one model turn. The model answers in natural language and, when the user wants a
-    /// picture, calls the image tool itself; any image it produced is drained from `collector`
-    /// and attached to the assistant message. Routing through the live `session` records the turn
-    /// so follow-ups like "make it bigger" keep their context.
-    /// Returns `true` if the turn failed (so the caller can pick an error haptic).
+    /// Reports a completed turn's usage as an OTLP span: an `ondas.tool` call for an `/image` turn
+    /// (the model doesn't run), or an `ondas.llm` request for a text turn. Metrics only — the reply
+    /// text is used solely to count completion tokens and is never sent. No-ops when telemetry is
+    /// disabled, so the reply token count (an extra model call) is skipped in the common off state.
+    private func recordTelemetry(
+        conversationID: UUID,
+        asImage: Bool,
+        assistantText: String,
+        usedTokens: Int?,
+        start: Date,
+        end: Date
+    ) async {
+        guard await TelemetryService.shared.isDeliverable else { return }
+
+        if asImage {
+            await TelemetryService.shared.recordToolCall(
+                conversationID: conversationID,
+                toolName: "generateImage",
+                start: start,
+                end: end
+            )
+            return
+        }
+
+        var inputTokens = 0
+        var outputTokens = 0
+        // `usedTokens` is only populated on iOS 26.4+ (where `tokenCount` exists); split the turn's
+        // post-transcript total into completion (the reply) and prompt (everything else) tokens.
+        if #available(iOS 26.4, *), let usedTokens {
+            outputTokens = (try? await SystemLanguageModel.default.tokenCount(for: assistantText)) ?? 0
+            inputTokens = max(0, usedTokens - outputTokens)
+        }
+        await TelemetryService.shared.recordLLM(
+            conversationID: conversationID,
+            feature: "chat",
+            inputTokens: inputTokens,
+            outputTokens: outputTokens,
+            start: start,
+            end: end
+        )
+    }
+
+    /// Generates an image for `prompt` directly (no model turn) and attaches it. Returns whether it
+    /// failed, so the caller can pick an error haptic and surface a friendly message.
+    private func generateImage(prompt: String, into assistant: ChatMessage) async -> Bool {
+        do {
+            let data = try await ImageGenerator.generate(prompt: prompt)
+            // If the user left mid-generation, don't write into the abandoned message.
+            guard !Task.isCancelled else { return false }
+            assistant.imageData = data
+            return false
+        } catch {
+            guard !Task.isCancelled else { return true }
+            assistant.text = friendlyMessage(for: error)
+            return true
+        }
+    }
+
+    /// Runs one model turn against `session`. On an image turn `session` carries the image tool and
+    /// `collector` is non-nil; any image the model generates is drained from `collector` and
+    /// attached. On a non-image turn there is no tool and `collector` is nil, so the model can only
+    /// reply in text. Returns `true` if the turn failed (so the caller can pick an error haptic).
+    /// Streams a plain text reply from the model into `assistant`. Returns whether the turn failed.
     private func respond(
         to text: String,
         session: LanguageModelSession,
-        collector: GeneratedImageCollector,
         into assistant: ChatMessage
     ) async -> Bool {
-        // Start the turn with an empty collector so this message only attaches what it generates.
-        await collector.reset()
         do {
             // Stream the reply so text appears token-by-token instead of all at once. Each
             // snapshot carries the full response so far, so assigning it directly keeps
@@ -338,25 +401,9 @@ final class ChatEngine {
                 if Task.isCancelled { break }
                 assistant.text = snapshot.content
             }
-            if let imageData = await collector.take() {
-                assistant.imageData = imageData
-            }
             return false
         } catch {
-            // The turn failed. Drain the collector first: if the tool produced an image before the
-            // failure (e.g. reply composition threw afterward), keep it — the user still gets the
-            // picture they asked for, and it stands alone rather than beside a contradictory error
-            // caption (any partial streamed text is dropped). Only when no image survived do we
-            // surface a friendly message. A `ToolCallError` means the tool itself threw (e.g. the
-            // generator is unavailable), so unwrap its real cause for the message.
-            if let imageData = await collector.take() {
-                assistant.imageData = imageData
-                assistant.text = ""
-            } else if let toolError = error as? LanguageModelSession.ToolCallError {
-                assistant.text = friendlyMessage(for: toolError.underlyingError)
-            } else {
-                assistant.text = friendlyMessage(for: error)
-            }
+            assistant.text = friendlyMessage(for: error)
             return true
         }
     }
