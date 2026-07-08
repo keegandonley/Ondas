@@ -277,8 +277,14 @@ final class ChatEngine {
             return
         }
 
-        // An `/image` turn generates directly with no model involvement; a plain turn streams a
-        // text reply from the model. Either way `failed` picks the completion vs error haptic.
+        // Snapshot the transcript token count as of the end of the previous turn, so telemetry can
+        // report this turn's *marginal* prompt tokens rather than the whole cumulative context.
+        let priorTokenCount = tokenUsage?.used
+
+        // An `/image` turn generates directly with no model involvement; a plain turn streams a text
+        // reply from the model. Either way `failed` picks the completion vs error haptic. Time only
+        // this call for the telemetry span — not the surrounding DB saves or the token refresh below.
+        let turnStart = Date.now
         let failed: Bool
         if asImage {
             failed = await generateImage(prompt: text, into: assistant)
@@ -287,6 +293,7 @@ final class ChatEngine {
         } else {
             return
         }
+        let turnEnd = Date.now
         // Re-enable the composer as soon as the reply lands; the token refresh below updates the
         // meter and cap without making the user wait. (The defer resets this too, so every exit
         // path is covered.)
@@ -301,36 +308,39 @@ final class ChatEngine {
         turnCounter += 1
         lastTurn = TurnSignal(id: turnCounter, failed: failed)
 
-        // Best-effort usage telemetry (metrics only — never message content), off unless the user
-        // enabled it in Settings. Only successful turns are reported. Detached and snapshotting the
-        // values first so it never delays the turn's teardown.
+        // Best-effort usage telemetry, off unless the user enabled it in Settings. Transcript text
+        // is attached only when separately opted in. Only successful turns are reported. Detached
+        // and snapshotting the values first so it never delays the turn's teardown.
         if !failed {
             let conversationID = conversation.id
             let assistantText = assistant.text
-            let usedTokens = tokenUsage?.used
-            let end = Date.now
+            let currentTokenCount = tokenUsage?.used
             Task { [weak self] in
                 await self?.recordTelemetry(
                     conversationID: conversationID,
                     asImage: asImage,
+                    userText: text,
                     assistantText: assistantText,
-                    usedTokens: usedTokens,
-                    start: now,
-                    end: end
+                    priorTokenCount: priorTokenCount,
+                    currentTokenCount: currentTokenCount,
+                    start: turnStart,
+                    end: turnEnd
                 )
             }
         }
     }
 
     /// Reports a completed turn's usage as an OTLP span: an `ondas.tool` call for an `/image` turn
-    /// (the model doesn't run), or an `ondas.llm` request for a text turn. Metrics only — the reply
-    /// text is used solely to count completion tokens and is never sent. No-ops when telemetry is
-    /// disabled, so the reply token count (an extra model call) is skipped in the common off state.
+    /// (the model doesn't run), or an `ondas.llm` request for a text turn. The user and assistant
+    /// text are forwarded to the telemetry service, which attaches them only when transcript capture
+    /// is enabled. No-ops when telemetry is disabled, so the reply token count is skipped then.
     private func recordTelemetry(
         conversationID: UUID,
         asImage: Bool,
+        userText: String,
         assistantText: String,
-        usedTokens: Int?,
+        priorTokenCount: Int?,
+        currentTokenCount: Int?,
         start: Date,
         end: Date
     ) async {
@@ -348,15 +358,21 @@ final class ChatEngine {
 
         var inputTokens = 0
         var outputTokens = 0
-        // `usedTokens` is only populated on iOS 26.4+ (where `tokenCount` exists); split the turn's
-        // post-transcript total into completion (the reply) and prompt (everything else) tokens.
-        if #available(iOS 26.4, *), let usedTokens {
+        // Token counting is iOS 26.4+ only. Report this turn's *marginal* tokens: `completion` is the
+        // reply; `prompt` is the new input added this turn (the user's message) — the growth in
+        // transcript size since the previous turn, minus the reply. This keeps
+        // `llm.token_count.prompt` a per-call figure comparable to the cache-aware claude_code/
+        // opencode sources, instead of the whole ever-growing conversation context.
+        if #available(iOS 26.4, *), let currentTokenCount {
             outputTokens = (try? await SystemLanguageModel.default.tokenCount(for: assistantText)) ?? 0
-            inputTokens = max(0, usedTokens - outputTokens)
+            let addedThisTurn = max(0, currentTokenCount - (priorTokenCount ?? 0))
+            inputTokens = max(0, addedThisTurn - outputTokens)
         }
         await TelemetryService.shared.recordLLM(
             conversationID: conversationID,
             feature: "chat",
+            prompt: userText,
+            completion: assistantText,
             inputTokens: inputTokens,
             outputTokens: outputTokens,
             start: start,

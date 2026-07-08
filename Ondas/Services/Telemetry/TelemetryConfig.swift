@@ -7,6 +7,7 @@ import Security
 /// conversation leaves the device unless the user turns this on and points it at an endpoint.
 struct TelemetryConfig: Sendable, Equatable {
     var isEnabled: Bool
+    var sendTranscripts: Bool
     var endpoint: URL?
     var apiKey: String?
 
@@ -15,7 +16,12 @@ struct TelemetryConfig: Sendable, Equatable {
         isEnabled && endpoint != nil && !(apiKey ?? "").isEmpty
     }
 
-    static let disabled = TelemetryConfig(isEnabled: false, endpoint: nil, apiKey: nil)
+    static let disabled = TelemetryConfig(
+        isEnabled: false,
+        sendTranscripts: false,
+        endpoint: nil,
+        apiKey: nil
+    )
 }
 
 /// A minimal secret store so the telemetry key can live in the Keychain in the app while tests
@@ -74,14 +80,12 @@ struct KeychainSecretStore: SecretStore {
 /// default. `@MainActor` because it is driven from the settings UI and app launch.
 @MainActor
 struct TelemetrySettingsStore {
-    /// The coding-stats OTLP base URL; the exporter appends `/v1/traces`.
-    static let defaultEndpoint = "https://stats.keegan.codes/api/otlp"
-
     private let defaults: UserDefaults
     private let secrets: SecretStore
 
     private enum Keys {
         static let enabled = "telemetry.enabled"
+        static let sendTranscripts = "telemetry.sendTranscripts"
         static let endpoint = "telemetry.endpoint"
         static let apiKeyAccount = "telemetry.apiKey"
     }
@@ -96,18 +100,20 @@ struct TelemetrySettingsStore {
         self.secrets = secrets
     }
 
-    /// The user-editable field values (endpoint defaults to the coding-stats base URL).
-    func load() -> (isEnabled: Bool, endpoint: String, apiKey: String) {
+    /// The user-editable field values.
+    func load() -> (isEnabled: Bool, sendTranscripts: Bool, endpoint: String, apiKey: String) {
         (
             isEnabled: defaults.bool(forKey: Keys.enabled),
-            endpoint: defaults.string(forKey: Keys.endpoint) ?? Self.defaultEndpoint,
+            sendTranscripts: defaults.bool(forKey: Keys.sendTranscripts),
+            endpoint: defaults.string(forKey: Keys.endpoint) ?? "",
             apiKey: secrets.secret(forKey: Keys.apiKeyAccount) ?? ""
         )
     }
 
     /// Persists the fields; a blank key clears the stored secret.
-    func save(isEnabled: Bool, endpoint: String, apiKey: String) {
+    func save(isEnabled: Bool, sendTranscripts: Bool, endpoint: String, apiKey: String) {
         defaults.set(isEnabled, forKey: Keys.enabled)
+        defaults.set(sendTranscripts, forKey: Keys.sendTranscripts)
         defaults.set(endpoint, forKey: Keys.endpoint)
         secrets.setSecret(apiKey, forKey: Keys.apiKeyAccount)
     }
@@ -119,6 +125,7 @@ struct TelemetrySettingsStore {
         let trimmedKey = values.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         return TelemetryConfig(
             isEnabled: values.isEnabled,
+            sendTranscripts: values.sendTranscripts,
             endpoint: trimmedEndpoint.isEmpty ? nil : URL(string: trimmedEndpoint),
             apiKey: trimmedKey.isEmpty ? nil : trimmedKey
         )

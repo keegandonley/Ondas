@@ -44,8 +44,33 @@ actor OTLPExporter {
         self.urlSession = urlSession
     }
 
-    /// Buffers `spans` and attempts a flush. When undeliverable (disabled / no endpoint / no key)
-    /// the spans are still buffered so they can go out once configured.
+    /// Removes sensitive content from spans waiting for a retry when transcript capture is turned
+    /// off. The surrounding usage metrics remain buffered and can still be delivered later.
+    func removeTranscriptContent() {
+        buffer = buffer.map(Self.removingTranscriptContent)
+    }
+
+    static func removingTranscriptContent(from span: TelemetrySpan) -> TelemetrySpan {
+        let transcriptKeys = ["gen_ai.input.messages", "gen_ai.output.messages"]
+        return TelemetrySpan(
+            name: span.name,
+            traceIdHex: span.traceIdHex,
+            spanIdHex: span.spanIdHex,
+            startUnixNano: span.startUnixNano,
+            endUnixNano: span.endUnixNano,
+            attributes: span.attributes.filter { !transcriptKeys.contains($0.key) }
+        )
+    }
+
+    /// True while a flush is in flight. Actors are reentrant across `await`, so without this a second
+    /// `enqueue` arriving during a POST would start an overlapping flush that re-sends the in-flight
+    /// spans (they aren't removed from `buffer` until the POST returns), duplicating them on the
+    /// server. The guard makes overlapping calls append-and-return; the active flush's drain loop
+    /// then picks up whatever they added.
+    private var isFlushing = false
+
+    /// Buffers `spans` and drains the buffer to the collector. When undeliverable (disabled / no
+    /// endpoint / no key) the spans are still buffered so they can go out once configured.
     func enqueue(_ spans: [TelemetrySpan], config: TelemetryConfig) async {
         buffer.append(contentsOf: spans)
         if buffer.count > Self.maxBuffered {
@@ -54,7 +79,15 @@ actor OTLPExporter {
         guard config.isDeliverable, let endpoint = config.endpoint, let apiKey = config.apiKey else {
             return
         }
-        await flush(endpoint: endpoint, apiKey: apiKey)
+        guard !isFlushing else { return } // an in-flight flush will drain what we just appended
+        isFlushing = true
+        defer { isFlushing = false }
+        // Drain until empty or a send doesn't succeed. Spans appended during a POST are caught on the
+        // next iteration, so a burst of turns still goes out under one flusher without duplication.
+        while !buffer.isEmpty {
+            let delivered = await flushOnce(endpoint: endpoint, apiKey: apiKey)
+            if !delivered { break }
+        }
     }
 
     /// One-shot delivery for the Settings "Send test event" button: POSTs `spans` immediately,
@@ -84,8 +117,12 @@ actor OTLPExporter {
         }
     }
 
-    private func flush(endpoint: URL, apiKey: String) async {
-        guard !buffer.isEmpty else { return }
+    /// POSTs the currently-buffered spans once. Returns whether the caller's drain loop should
+    /// continue: `true` when this batch was delivered (or dropped as unencodable) so any spans that
+    /// arrived meanwhile can go next; `false` on a transient failure so we stop and retry later.
+    /// Only the caller (`enqueue`) runs this, and only while `isFlushing` — so no two flushes overlap.
+    private func flushOnce(endpoint: URL, apiKey: String) async -> Bool {
+        guard !buffer.isEmpty else { return false }
 
         let pending = buffer
         let body: Data
@@ -94,8 +131,8 @@ actor OTLPExporter {
         } catch {
             // An unencodable payload would never succeed; drop it rather than wedge the buffer.
             Self.logger.error("Dropping unencodable telemetry batch: \(error, privacy: .public)")
-            buffer.removeFirst(pending.count)
-            return
+            buffer.removeFirst(min(pending.count, buffer.count))
+            return true
         }
 
         var request = URLRequest(url: endpoint.appendingPathComponent("v1/traces"))
@@ -108,14 +145,16 @@ actor OTLPExporter {
             let (_, response) = try await urlSession.data(for: request)
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
                 // Non-2xx (e.g. bad key): keep buffered for a later retry.
-                return
+                return false
             }
             // Remove only what we sent — new spans may have been appended during the await, and
             // the buffer is FIFO so the delivered ones are at the front.
             buffer.removeFirst(min(pending.count, buffer.count))
+            return true
         } catch {
             // Network error: keep buffered.
             Self.logger.debug("Telemetry POST failed, will retry: \(error, privacy: .public)")
+            return false
         }
     }
 

@@ -70,11 +70,25 @@ struct MessageBubble: View {
             TimelineView(.periodic(from: .now, by: Self.caretBlinkInterval)) { context in
                 let tick = Int(context.date.timeIntervalSinceReferenceDate / Self.caretBlinkInterval)
                 let caret = tick.isMultiple(of: 2) ? " ▍" : ""
-                Text(verbatim: message.text + caret)
+                Text("\(renderedText)\(Text(verbatim: caret))")
             }
         } else {
-            Text(message.text)
+            renderedText
         }
+    }
+
+    /// Model replies may contain Markdown, while user-authored text is always shown verbatim.
+    /// Parsing on each streamed update also lets formatting appear as soon as its closing marker
+    /// arrives. An incomplete or otherwise invalid fragment remains readable as plain text.
+    private var renderedText: Text {
+        guard !isUser,
+              let attributed = try? AttributedString(
+                markdown: message.text,
+                options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+              ) else {
+            return Text(verbatim: message.text)
+        }
+        return Text(attributed)
     }
 
     private static let caretBlinkInterval: TimeInterval = 0.6

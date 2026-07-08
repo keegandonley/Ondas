@@ -11,11 +11,36 @@ struct TelemetryTests {
     @Test func configIsDeliverableOnlyWhenEnabledEndpointAndKeyPresent() {
         let endpoint = URL(string: "https://example.com/api/otlp")
 
-        #expect(!TelemetryConfig(isEnabled: false, endpoint: endpoint, apiKey: "k").isDeliverable)
-        #expect(!TelemetryConfig(isEnabled: true, endpoint: nil, apiKey: "k").isDeliverable)
-        #expect(!TelemetryConfig(isEnabled: true, endpoint: endpoint, apiKey: nil).isDeliverable)
-        #expect(!TelemetryConfig(isEnabled: true, endpoint: endpoint, apiKey: "").isDeliverable)
-        #expect(TelemetryConfig(isEnabled: true, endpoint: endpoint, apiKey: "k").isDeliverable)
+        #expect(!TelemetryConfig(
+            isEnabled: false,
+            sendTranscripts: false,
+            endpoint: endpoint,
+            apiKey: "k"
+        ).isDeliverable)
+        #expect(!TelemetryConfig(
+            isEnabled: true,
+            sendTranscripts: false,
+            endpoint: nil,
+            apiKey: "k"
+        ).isDeliverable)
+        #expect(!TelemetryConfig(
+            isEnabled: true,
+            sendTranscripts: false,
+            endpoint: endpoint,
+            apiKey: nil
+        ).isDeliverable)
+        #expect(!TelemetryConfig(
+            isEnabled: true,
+            sendTranscripts: false,
+            endpoint: endpoint,
+            apiKey: ""
+        ).isDeliverable)
+        #expect(TelemetryConfig(
+            isEnabled: true,
+            sendTranscripts: false,
+            endpoint: endpoint,
+            apiKey: "k"
+        ).isDeliverable)
         #expect(!TelemetryConfig.disabled.isDeliverable)
     }
 
@@ -44,6 +69,52 @@ struct TelemetryTests {
         let date = Date(timeIntervalSince1970: 1)
         #expect(TelemetryService.unixNano(date) == 1_000_000_000)
         #expect(TelemetryService.unixNano(Date(timeIntervalSince1970: -5)) == 0)
+    }
+
+    @Test func transcriptJSONUsesGenAIMessageShape() throws {
+        let data = try #require(
+            TelemetryService.transcriptJSON(role: "user", text: "Hello").data(using: .utf8)
+        )
+        let messages = try #require(
+            try JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        )
+        let message = try #require(messages.first)
+        #expect(message["role"] as? String == "user")
+        let parts = try #require(message["parts"] as? [[String: Any]])
+        #expect(parts.first?["type"] as? String == "text")
+        #expect(parts.first?["content"] as? String == "Hello")
+    }
+
+    @Test func transcriptAttributesAreOptInAndCanBeScrubbed() {
+        #expect(
+            TelemetryService.transcriptAttributes(
+                prompt: "private prompt",
+                completion: "private reply",
+                enabled: false
+            ).isEmpty
+        )
+
+        let transcriptAttributes = TelemetryService.transcriptAttributes(
+            prompt: "private prompt",
+            completion: "private reply",
+            enabled: true
+        )
+        #expect(transcriptAttributes.map(\.key) == [
+            "gen_ai.input.messages",
+            "gen_ai.output.messages",
+        ])
+
+        let span = TelemetrySpan(
+            name: "ondas.llm",
+            traceIdHex: "trace",
+            spanIdHex: "span",
+            startUnixNano: 1,
+            endUnixNano: 2,
+            attributes: [.init(key: "session.id", value: .string("session"))]
+                + transcriptAttributes
+        )
+        let scrubbed = OTLPExporter.removingTranscriptContent(from: span)
+        #expect(scrubbed.attributes.map(\.key) == ["session.id"])
     }
 
     // MARK: OTLP JSON encoding
@@ -99,6 +170,19 @@ struct TelemetryTests {
     // MARK: Settings round-trip
 
     @MainActor
+    @Test func settingsStoreHasNoDefaultEndpoint() throws {
+        let suite = "telemetry.tests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = TelemetrySettingsStore(defaults: defaults, secrets: InMemorySecretStore())
+
+        #expect(store.load().endpoint.isEmpty)
+        #expect(!store.load().sendTranscripts)
+        #expect(store.currentConfig().endpoint == nil)
+        #expect(!store.currentConfig().sendTranscripts)
+    }
+
+    @MainActor
     @Test func settingsStoreRoundTripsThroughDefaultsAndSecretStore() throws {
         let suite = "telemetry.tests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
@@ -106,15 +190,22 @@ struct TelemetryTests {
         let secrets = InMemorySecretStore()
         let store = TelemetrySettingsStore(defaults: defaults, secrets: secrets)
 
-        store.save(isEnabled: true, endpoint: "https://example.com/api/otlp", apiKey: "otlp_key")
+        store.save(
+            isEnabled: true,
+            sendTranscripts: true,
+            endpoint: "https://example.com/api/otlp",
+            apiKey: "otlp_key"
+        )
 
         let values = store.load()
         #expect(values.isEnabled)
+        #expect(values.sendTranscripts)
         #expect(values.endpoint == "https://example.com/api/otlp")
         #expect(values.apiKey == "otlp_key")
 
         let config = store.currentConfig()
         #expect(config.isDeliverable)
+        #expect(config.sendTranscripts)
         #expect(config.endpoint == URL(string: "https://example.com/api/otlp"))
         #expect(config.apiKey == "otlp_key")
     }
@@ -127,8 +218,18 @@ struct TelemetryTests {
         let secrets = InMemorySecretStore()
         let store = TelemetrySettingsStore(defaults: defaults, secrets: secrets)
 
-        store.save(isEnabled: true, endpoint: "https://example.com/api/otlp", apiKey: "otlp_key")
-        store.save(isEnabled: true, endpoint: "https://example.com/api/otlp", apiKey: "")
+        store.save(
+            isEnabled: true,
+            sendTranscripts: false,
+            endpoint: "https://example.com/api/otlp",
+            apiKey: "otlp_key"
+        )
+        store.save(
+            isEnabled: true,
+            sendTranscripts: false,
+            endpoint: "https://example.com/api/otlp",
+            apiKey: ""
+        )
 
         #expect(store.load().apiKey == "")
         #expect(secrets.secret(forKey: "telemetry.apiKey") == nil)

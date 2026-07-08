@@ -1,8 +1,8 @@
 import Foundation
 
-/// Central, app-wide sink for on-device model usage telemetry. Emits **metrics only** — model id,
-/// token counts, tool calls, and timing — as OTLP spans; it never sees or sends prompt or reply
-/// text. No-ops entirely unless the user has enabled and configured telemetry in Settings.
+/// Central, app-wide sink for on-device model telemetry. Emits model id, token counts, tool calls,
+/// and timing as OTLP spans. Prompt and reply text are attached only when transcript capture is
+/// explicitly enabled. No-ops entirely unless telemetry is enabled and configured in Settings.
 ///
 /// An `actor` so callers can fire-and-forget from the main actor without blocking a chat turn, and so
 /// the buffered exporter stays race-free under Swift 6 strict concurrency.
@@ -26,8 +26,11 @@ actor TelemetryService {
     var isDeliverable: Bool { config.isDeliverable }
 
     /// Replaces the active configuration (from app launch and the settings screen).
-    func update(_ config: TelemetryConfig) {
+    func update(_ config: TelemetryConfig) async {
         self.config = config
+        if !config.sendTranscripts {
+            await exporter.removeTranscriptContent()
+        }
     }
 
     /// Records one on-device model invocation as an `ondas.llm` span. `feature` distinguishes the
@@ -35,25 +38,33 @@ actor TelemetryService {
     func recordLLM(
         conversationID: UUID,
         feature: String,
+        prompt: String,
+        completion: String,
         inputTokens: Int,
         outputTokens: Int,
         start: Date,
         end: Date
     ) async {
         guard config.isDeliverable else { return }
+        var attributes: [TelemetrySpan.Attribute] = [
+            .init(key: "session.id", value: .string(conversationID.uuidString)),
+            .init(key: "ondas.feature", value: .string(feature)),
+            .init(key: "llm.model_name", value: .string(Self.modelName)),
+            .init(key: "llm.token_count.prompt", value: .int(inputTokens)),
+            .init(key: "llm.token_count.completion", value: .int(outputTokens)),
+        ]
+        attributes.append(contentsOf: Self.transcriptAttributes(
+            prompt: prompt,
+            completion: completion,
+            enabled: config.sendTranscripts
+        ))
         let span = TelemetrySpan(
             name: "ondas.llm",
             traceIdHex: Self.traceId(for: conversationID),
             spanIdHex: Self.randomSpanId(),
             startUnixNano: Self.unixNano(start),
             endUnixNano: Self.unixNano(end),
-            attributes: [
-                .init(key: "session.id", value: .string(conversationID.uuidString)),
-                .init(key: "ondas.feature", value: .string(feature)),
-                .init(key: "llm.model_name", value: .string(Self.modelName)),
-                .init(key: "llm.token_count.prompt", value: .int(inputTokens)),
-                .init(key: "llm.token_count.completion", value: .int(outputTokens)),
-            ]
+            attributes: attributes
         )
         await exporter.enqueue([span], config: config)
     }
@@ -119,6 +130,41 @@ actor TelemetryService {
     static func unixNano(_ date: Date) -> UInt64 {
         let nanos = date.timeIntervalSince1970 * 1_000_000_000
         return nanos > 0 ? UInt64(nanos) : 0
+    }
+
+    /// OpenTelemetry GenAI content attributes use JSON arrays of structured messages.
+    static func transcriptAttributes(
+        prompt: String,
+        completion: String,
+        enabled: Bool
+    ) -> [TelemetrySpan.Attribute] {
+        guard enabled else { return [] }
+        return [
+            .init(
+                key: "gen_ai.input.messages",
+                value: .string(transcriptJSON(role: "user", text: prompt))
+            ),
+            .init(
+                key: "gen_ai.output.messages",
+                value: .string(transcriptJSON(role: "assistant", text: completion))
+            ),
+        ]
+    }
+
+    static func transcriptJSON(role: String, text: String) -> String {
+        let message = TranscriptMessage(role: role, parts: [.init(type: "text", content: text)])
+        let data = try? JSONEncoder().encode([message])
+        return data.flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+    }
+
+    private struct TranscriptMessage: Encodable {
+        let role: String
+        let parts: [Part]
+
+        struct Part: Encodable {
+            let type: String
+            let content: String
+        }
     }
 
     private static func hex(_ bytes: [UInt8]) -> String {

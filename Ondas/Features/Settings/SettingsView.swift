@@ -1,16 +1,16 @@
 import SwiftUI
 
-/// Lets the user opt in to sending on-device model usage telemetry to a coding-stats OTLP endpoint.
-/// Off by default: this app is otherwise fully on-device, so nothing about a conversation leaves the
-/// device unless the user enables this and provides a destination + key. Only usage metrics — model
-/// id, token counts, and timings — are ever sent; message content never is.
+/// Lets the user opt in to sending on-device model usage telemetry to an OTLP endpoint. Telemetry
+/// and transcript capture are both off by default; message content is included only when the user
+/// separately enables transcript capture.
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
 
     private let store = TelemetrySettingsStore()
 
     @State private var isEnabled = false
-    @State private var endpoint = TelemetrySettingsStore.defaultEndpoint
+    @State private var sendTranscripts = false
+    @State private var endpoint = ""
     @State private var apiKey = ""
     @State private var testResult: TestResult?
     @State private var isTesting = false
@@ -26,6 +26,7 @@ struct SettingsView: View {
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         return TelemetryConfig(
             isEnabled: isEnabled,
+            sendTranscripts: sendTranscripts,
             endpoint: trimmedEndpoint.isEmpty ? nil : URL(string: trimmedEndpoint),
             apiKey: trimmedKey.isEmpty ? nil : trimmedKey
         )
@@ -38,9 +39,18 @@ struct SettingsView: View {
                     Toggle("Send usage telemetry", isOn: $isEnabled)
                 } footer: {
                     Text(
-                        "Off by default. When on, Ondas sends only model usage — model id, token "
-                            + "counts, tool calls, and timing — to your endpoint. Your messages and "
-                            + "the model's replies never leave the device."
+                        "Off by default. When on, Ondas sends model id, token counts, tool calls, "
+                            + "and timing to your endpoint."
+                    )
+                }
+
+                Section {
+                    Toggle("Send transcripts", isOn: $sendTranscripts)
+                        .disabled(!isEnabled)
+                } footer: {
+                    Text(
+                        "Includes each successful text prompt and model reply in OTLP spans. "
+                            + "Messages may contain sensitive information."
                     )
                 }
 
@@ -95,12 +105,18 @@ struct SettingsView: View {
     private func load() {
         let values = store.load()
         isEnabled = values.isEnabled
+        sendTranscripts = values.sendTranscripts
         endpoint = values.endpoint
         apiKey = values.apiKey
     }
 
     private func saveAndDismiss() {
-        store.save(isEnabled: isEnabled, endpoint: endpoint, apiKey: apiKey)
+        store.save(
+            isEnabled: isEnabled,
+            sendTranscripts: sendTranscripts,
+            endpoint: endpoint,
+            apiKey: apiKey
+        )
         let config = store.currentConfig()
         Task { await TelemetryService.shared.update(config) }
         dismiss()
