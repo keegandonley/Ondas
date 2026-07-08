@@ -263,14 +263,19 @@ struct ChatView: View {
             .background(Theme.assistantBubble, in: Capsule())
             .disabled(engine.isAtCapacity)
 
-            Button(action: send) {
-                Image(systemName: isImageMode ? "sparkles" : "arrow.up.circle.fill")
+            Button {
+                if engine.isResponding { cancel() } else { send() }
+            } label: {
+                Image(systemName: composerButtonSymbol)
                     .font(.system(size: 32))
                     .symbolRenderingMode(.hierarchical)
                     .contentTransition(.symbolEffect(.replace))
                     .symbolEffect(.bounce, value: sentCount)
             }
-            .disabled(!canSend)
+            // While a reply is streaming the button becomes a stop control (always tappable so a
+            // runaway generation can be halted); otherwise it's the send button, gated by `canSend`.
+            .disabled(engine.isResponding ? false : !canSend)
+            .accessibilityLabel(engine.isResponding ? "Stop generating" : "Send message")
         }
         .padding(.horizontal)
         .padding(.vertical, 10)
@@ -311,6 +316,13 @@ struct ChatView: View {
         draft = prompt
     }
 
+    /// The composer button's symbol: a stop control while a reply streams, otherwise the
+    /// image-mode sparkle or the plain send arrow.
+    private var composerButtonSymbol: String {
+        if engine.isResponding { return "stop.circle.fill" }
+        return isImageMode ? "sparkles" : "arrow.up.circle.fill"
+    }
+
     private var canSend: Bool {
         !draft.isBlank
             && !engine.isResponding
@@ -328,6 +340,12 @@ struct ChatView: View {
         isImageMode = false
         sentCount += 1
         engine.submit(outgoing, asImage: asImage)
+    }
+
+    /// Stops the in-flight reply. The engine cancels the streaming turn, which keeps whatever text
+    /// arrived so far and re-enables the composer — the escape hatch for a runaway generation.
+    private func cancel() {
+        engine.cancelActiveTurn()
     }
 
     private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) {
