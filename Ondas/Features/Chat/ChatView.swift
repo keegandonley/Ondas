@@ -19,6 +19,11 @@ struct ChatView: View {
     /// Increments on each send, driving the send-button symbol bounce and the send haptic.
     @State private var sentCount = 0
 
+    /// Baseline height of the composer's single-line input, scaled with Dynamic Type. Flooring the
+    /// input row to this keeps its height fixed when the image chip appears or disappears — the chip
+    /// is otherwise a hair taller than one line of text, which made the field visibly jump on toggle.
+    @ScaledMetric(relativeTo: .body) private var composerFieldHeight: CGFloat = 24
+
     /// True when the composer is in image mode — entered by typing the `/image` command, shown as a
     /// highlighted chip. The next send is an explicit image request; `draft` holds just the prompt.
     @State private var isImageMode = false
@@ -259,6 +264,7 @@ struct ChatView: View {
                     .onSubmit(send)
                     .onChange(of: draft) { enterImageModeIfCommanded() }
             }
+            .frame(minHeight: composerFieldHeight)
             .padding(.horizontal, 14)
             .padding(.vertical, 9)
             .background(Theme.assistantBubble, in: Capsule())
@@ -316,9 +322,9 @@ struct ChatView: View {
             }
             .font(.caption.weight(.semibold))
             .foregroundStyle(.white)
-            .padding(.leading, 8)
-            .padding(.trailing, 6)
-            .padding(.vertical, 4)
+            .padding(.horizontal, 9)
+            // Match the input row's baseline height exactly so toggling the chip never resizes it.
+            .frame(height: composerFieldHeight)
             .background(Theme.userBubble, in: Capsule())
         }
         .buttonStyle(.plain)

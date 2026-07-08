@@ -67,8 +67,12 @@ struct ConversationListView: View {
                     Button {
                         showingGenerator = true
                     } label: {
-                        Label("Generate Image", systemImage: "wand.and.stars")
+                        // Show the title alongside the icon: on Mac Catalyst a bare wand glyph reads
+                        // as a generic "AI" action, not an image one. The words make it unambiguous.
+                        Label("Generate Image", systemImage: "photo.badge.plus")
                     }
+                    .labelStyle(.titleAndIcon)
+                    .help("Generate an image from a text prompt")
                 }
             }
             .overlay {
