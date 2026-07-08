@@ -1,6 +1,7 @@
 import Foundation
 import FoundationModels
 import Observation
+import OSLog
 import SwiftData
 
 /// A snapshot of how much of the on-device model's context window a conversation is using.
@@ -86,6 +87,8 @@ final class ChatEngine {
     /// Tokens held back from the context window for the model's reply, so a nearly-full chat can
     /// still answer. Tuned against the on-device model's small (~4k-token) context window.
     private static let responseTokenReserve = 1024
+
+    private static let logger = Logger(subsystem: AppInfo.bundleID, category: "ChatEngine")
 
     /// Whether the conversation can accept another turn. Prefers the real token budget; falls back
     /// to the message-count cap when token counting is unavailable (pre-iOS 26.4 or a failed count).
@@ -340,6 +343,7 @@ final class ChatEngine {
             // Surface a friendly notice and insert no marker, so the user can retry from the still-
             // showing capacity banner. Skip if the turn was abandoned (view gone / thread switched).
             guard !Task.isCancelled, !conversation.isDeleted else { return }
+            Self.logFailure("Compaction summary", error)
             insertErrorNotice(friendlyMessage(for: error), into: conversation, context: modelContext)
             return
         }
@@ -613,6 +617,7 @@ final class ChatEngine {
             return false
         } catch {
             guard !Task.isCancelled else { return true }
+            Self.logFailure("Image generation", error)
             assistant.text = friendlyMessage(for: error)
             assistant.isError = true
             return true
@@ -646,6 +651,7 @@ final class ChatEngine {
             // `isCancelled` break — don't overwrite an abandoned (possibly deleted) message's
             // partial text with an error it never had.
             guard !Task.isCancelled else { return true }
+            Self.logFailure("Text response", error)
             assistant.text = friendlyMessage(for: error)
             assistant.isError = true
             return true
@@ -656,7 +662,64 @@ final class ChatEngine {
         if let generationError = error as? ImageGenerator.GenerationError {
             return generationError.errorDescription ?? "Something went wrong."
         }
+        if let modelError = error as? LanguageModelSession.GenerationError,
+           let curated = Self.message(for: modelError) {
+            return curated
+        }
         return "Sorry, I couldn't finish that. Please try again."
+    }
+
+    /// Maps a Foundation Models generation error to a curated, user-facing message, or nil to use the
+    /// generic fallback. Apple's own `errorDescription`s are developer-facing ("Exceeded the context
+    /// window size."), so we don't surface them verbatim — this mirrors the availability and
+    /// image-generation mappings. Structured-generation failures (`unsupportedGuide`,
+    /// `decodingFailure`) shouldn't arise in plain chat, so they fall through to the generic message.
+    private static func message(for error: LanguageModelSession.GenerationError) -> String? {
+        switch error {
+        case .exceededContextWindowSize:
+            return "This conversation has grown too long to continue. Start a new chat to keep going."
+        case .guardrailViolation, .refusal:
+            return "I can't help with that request."
+        case .unsupportedLanguageOrLocale:
+            return "I can't respond in that language yet."
+        case .rateLimited:
+            return "Too many requests right now. Wait a moment and try again."
+        case .concurrentRequests:
+            return "I'm still finishing the last response. Try again in a moment."
+        case .assetsUnavailable:
+            return "The on-device model is still getting ready. Try again shortly."
+        case .unsupportedGuide, .decodingFailure:
+            return nil
+        @unknown default:
+            return nil
+        }
+    }
+
+    /// Logs a failed model operation for diagnostics. Foundation Models errors are logged by case
+    /// only — their `Context` can echo prompt fragments, so we never log the error itself and avoid
+    /// leaking conversation text into the device logs.
+    private static func logFailure(_ operation: String, _ error: Error) {
+        if let modelError = error as? LanguageModelSession.GenerationError {
+            logger.error("\(operation, privacy: .public) failed: LanguageModelSession.GenerationError.\(diagnosticCase(for: modelError), privacy: .public)")
+        } else {
+            logger.error("\(operation, privacy: .public) failed: \(String(describing: type(of: error)), privacy: .public)")
+        }
+    }
+
+    /// A stable, content-free label for a generation error's case, for diagnostic logging.
+    private static func diagnosticCase(for error: LanguageModelSession.GenerationError) -> String {
+        switch error {
+        case .exceededContextWindowSize: return "exceededContextWindowSize"
+        case .assetsUnavailable: return "assetsUnavailable"
+        case .guardrailViolation: return "guardrailViolation"
+        case .unsupportedGuide: return "unsupportedGuide"
+        case .unsupportedLanguageOrLocale: return "unsupportedLanguageOrLocale"
+        case .decodingFailure: return "decodingFailure"
+        case .rateLimited: return "rateLimited"
+        case .concurrentRequests: return "concurrentRequests"
+        case .refusal: return "refusal"
+        @unknown default: return "unknown"
+        }
     }
 
     private static func message(for reason: SystemLanguageModel.Availability.UnavailableReason) -> String {
