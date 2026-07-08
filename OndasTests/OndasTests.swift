@@ -109,4 +109,55 @@ struct OndasTests {
         #expect(merged.first?.sourceConversationID == nil)
         #expect(merged.first?.prompt == "sunset")
     }
+
+    // MARK: Compaction
+
+    /// Builds a message at a fixed offset so ordered arrays are unambiguous.
+    private func msg(_ role: ChatRole, _ text: String, at offset: TimeInterval) -> ChatMessage {
+        ChatMessage(role: role, text: text, createdAt: Date(timeIntervalSinceReferenceDate: offset))
+    }
+
+    @Test func uncompactedLiveMessagesIsEveryRealTurn() {
+        let ordered = [msg(.user, "a", at: 0), msg(.assistant, "b", at: 1)]
+        #expect(Compaction.activeSummary(in: ordered) == nil)
+        #expect(Compaction.capacityCount(in: ordered) == 2)
+        #expect(Compaction.liveMessages(in: ordered).map(\.text) == ["a", "b"])
+    }
+
+    @Test func errorNoticesAreExcludedFromLiveMessagesAndCapacity() {
+        let error = msg(.assistant, "oops", at: 1)
+        error.isError = true
+        let ordered = [msg(.user, "a", at: 0), error, msg(.assistant, "b", at: 2)]
+        #expect(Compaction.capacityCount(in: ordered) == 2)
+        #expect(Compaction.liveMessages(in: ordered).map(\.text) == ["a", "b"])
+    }
+
+    @Test func afterCompactionLiveMessagesAreOnlyTurnsAfterTheMarker() {
+        // The divider is appended at the seam; the live segment is every real turn following the
+        // last marker (turns above it are summarized history and no longer feed the model).
+        var ordered = (0..<3).map { msg($0.isMultiple(of: 2) ? .user : .assistant, "old\($0)", at: Double($0)) }
+        let marker = msg(.assistant, "SUMMARY", at: 3)
+        marker.isCompactionSummary = true
+        ordered += [marker, msg(.user, "next-user", at: 4), msg(.assistant, "next-reply", at: 5)]
+
+        #expect(Compaction.activeSummary(in: ordered) == "SUMMARY")
+        // Only post-marker turns count toward capacity — the compacted chat is no longer stuck.
+        #expect(Compaction.capacityCount(in: ordered) == 2)
+        #expect(Compaction.liveMessages(in: ordered).map(\.text) == ["next-user", "next-reply"])
+        // The marker's own summary is never replayed as a message.
+        #expect(!Compaction.liveMessages(in: ordered).map(\.text).contains("SUMMARY"))
+    }
+
+    @Test func freshCompactionEmptiesTheLiveSegment() {
+        // Immediately after compaction (marker appended at the end, nothing after it yet) the live
+        // segment is empty, so capacity resets to zero and the model continues from the summary.
+        var ordered = (0..<4).map { msg($0.isMultiple(of: 2) ? .user : .assistant, "m\($0)", at: Double($0)) }
+        let marker = msg(.assistant, "SUMMARY", at: 4)
+        marker.isCompactionSummary = true
+        ordered.append(marker)
+
+        #expect(Compaction.activeSummary(in: ordered) == "SUMMARY")
+        #expect(Compaction.capacityCount(in: ordered) == 0)
+        #expect(Compaction.liveMessages(in: ordered).isEmpty)
+    }
 }

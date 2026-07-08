@@ -43,9 +43,10 @@ final class Conversation {
         (messages ?? []).sorted { $0.createdAt < $1.createdAt }
     }
 
-    /// The most recent message, used for the list-row preview.
+    /// The most recent message, used for the list-row preview. Compaction markers are skipped so
+    /// the sidebar shows a real turn, not a summary divider.
     var latestMessage: ChatMessage? {
-        orderedMessages.last
+        orderedMessages.last(where: { !$0.isCompactionSummary })
     }
 
     /// The most recent message in this thread that carries a generated image, or nil if it has none.
@@ -58,11 +59,13 @@ final class Conversation {
         !(messages ?? []).isEmpty
     }
 
-    /// True once the conversation has hit `messageLimit` and can no longer accept new turns.
-    /// Error notices don't count: they're excluded from the rehydrated transcript (see
-    /// `ChatEngine.makeTranscript`), so they consume none of the context budget this cap proxies —
-    /// a run of failed turns must not close a chat early.
+    /// True once the current segment has hit `messageLimit` and can no longer accept new turns.
+    /// Only the turns since the last compaction count (see `Compaction.capacityCount`): compaction
+    /// summarizes older turns into a divider and continues in place, so a compacted chat must not
+    /// stay stuck at capacity. Error notices are excluded too — they're kept out of the rehydrated
+    /// transcript, so they consume none of the context budget this cap proxies. On iOS 26.4+ the
+    /// real token budget (`ChatEngine.tokenUsage`) is the primary defense; this is the fallback.
     var isAtCapacity: Bool {
-        (messages ?? []).count(where: { !$0.isError }) >= Conversation.messageLimit
+        Compaction.capacityCount(in: orderedMessages) >= Conversation.messageLimit
     }
 }

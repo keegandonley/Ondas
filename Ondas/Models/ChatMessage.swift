@@ -25,6 +25,14 @@ final class ChatMessage {
     /// transcript so the model never sees them as its own words. Defaulted for CloudKit.
     var isError: Bool = false
 
+    /// True when this message is a compaction marker rather than a chat turn: its `text` holds a
+    /// model-generated summary of everything before it, and the UI renders it as a "Conversation
+    /// compacted" divider (see `CompactionDivider`), never as a bubble. On the model side the
+    /// summary is folded into the rehydrated session's instructions while the turns above the
+    /// marker stop feeding the model (see `Compaction` / `ChatEngine.makeTranscript`). Defaulted
+    /// for CloudKit — see the Production-schema deploy caveat in the vault before shipping.
+    var isCompactionSummary: Bool = false
+
     /// The owning thread. Optional and un-annotated here; the inverse and cascade delete
     /// rule live on `Conversation.messages`.
     var conversation: Conversation? = nil
@@ -54,6 +62,6 @@ final class ChatMessage {
     /// True for a freshly-inserted assistant bubble that has no content yet — the state the
     /// UI renders as a "thinking" indicator while the model works.
     var isEmptyPlaceholder: Bool {
-        role == .assistant && text.isEmpty && !hasImage
+        role == .assistant && text.isEmpty && !hasImage && !isCompactionSummary
     }
 }

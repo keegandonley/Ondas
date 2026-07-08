@@ -53,6 +53,15 @@ final class ChatEngine {
     /// composer and shows a progress indicator.
     private(set) var isResponding = false
 
+    /// True while a compaction is summarizing the conversation, so the "Continue" action can show
+    /// a progress state and ignore repeat taps.
+    private(set) var isCompacting = false
+
+    /// Bumped when a compaction starts, so a superseded compaction's `defer` (unwinding after its
+    /// `await` on a thread the user already left) can't clear the flag out from under a newer,
+    /// genuinely in-flight compaction. Only the current generation's task resets `isCompacting`.
+    private var compactionGeneration = 0
+
     /// Non-nil when the on-device language model can't run, carrying a user-facing reason.
     private(set) var availabilityMessage: String?
 
@@ -93,6 +102,37 @@ final class ChatEngine {
 
         """
 
+    /// Target length for a compaction summary, in words. Kept well under the ~400-token budget the
+    /// summary is allowed to occupy in the rebuilt context, and bounds growth across repeated
+    /// compactions (each round re-condenses the previous summary to this same length).
+    private static let summaryWordTarget = 150
+
+    /// Instructions given to the throwaway session that condenses a conversation on compaction.
+    private static let summaryInstructionsText =
+        """
+        You are compacting a long conversation to free up the model's limited context. Write a
+        concise summary — about \(summaryWordTarget) words or fewer, and never more than a few short
+        paragraphs — capturing the key facts, decisions, the user's stated preferences, and any open
+        threads needed to continue the conversation naturally. Preserve names, numbers, and anything
+        the user asked you to remember. Do not add commentary and do not address the user: output
+        only the summary.
+        """
+
+    /// Builds the session's instructions, folding in a compaction summary (when present) as
+    /// background context. It's framed as already-summarized prior context so the model treats it
+    /// as memory rather than words to echo back on the next turn.
+    private static func instructionsContent(summary: String?) -> String {
+        guard let summary, !summary.isEmpty else { return chatInstructionsText }
+        return chatInstructionsText + """
+
+            Earlier in this conversation was compacted to save space. Here is a summary of what \
+            happened so far — treat it as background context you already know; do not repeat it \
+            back to the user:
+
+            \(summary)
+            """
+    }
+
     /// Points the engine at `conversation`, rebuilding the model session only when the
     /// target thread actually changes. Safe to call repeatedly (e.g. from `.task(id:)`).
     func configure(conversation: Conversation, context: ModelContext) async {
@@ -100,6 +140,10 @@ final class ChatEngine {
         if self.conversation?.id != conversation.id || session == nil {
             // Abandon any turn still streaming into the previous conversation before switching.
             cancelActiveTurn()
+            // Clear the compaction progress flag so a cancelled compaction on the previous thread
+            // can't leave the newly-opened one transiently showing "Compacting…" (its orphaned
+            // task's `defer` may not have unwound yet).
+            isCompacting = false
             self.conversation = conversation
             session = Self.makeSession(for: conversation.orderedMessages)
         }
@@ -109,34 +153,44 @@ final class ChatEngine {
 
     /// Builds the conversation's text session, rehydrated from `history` so context survives
     /// relaunches and thread switches. There is no image tool: image generation is handled directly
-    /// by the engine on `/image` turns and never involves the model. A brand-new thread starts from
-    /// a blank instructions-only session.
+    /// by the engine on `/image` turns and never involves the model. A brand-new (or fully empty)
+    /// thread starts from a blank instructions-only session.
+    ///
+    /// When the conversation has been compacted, only the turns the model should still see are
+    /// seeded (`Compaction.liveMessages`) and the summary of the older turns is folded into the
+    /// instructions — the turns above the divider stay on screen but no longer feed the model.
     private static func makeSession(for history: [ChatMessage]) -> LanguageModelSession {
-        if history.isEmpty {
+        let live = Compaction.liveMessages(in: history)
+        let summary = Compaction.activeSummary(in: history)
+        if live.isEmpty && summary == nil {
             return LanguageModelSession(instructions: Instructions(chatInstructionsText))
         }
         return LanguageModelSession(
             model: SystemLanguageModel.default,
-            transcript: makeTranscript(from: history)
+            transcript: makeTranscript(summary: summary, messages: live)
         )
     }
 
-    /// Reconstructs a `Transcript` from stored messages: a leading instructions entry (so the
-    /// rehydrated session keeps its system prompt) followed by every message mapped to a
-    /// prompt/response entry. Seeding the whole history is safe because `Conversation.messageLimit`
-    /// hard-caps how long a chat can grow.
-    private static func makeTranscript(from history: [ChatMessage]) -> Transcript {
+    /// Reconstructs a `Transcript`: a leading instructions entry (so the rehydrated session keeps
+    /// its system prompt, with any compaction summary folded in as background context) followed by
+    /// each live message mapped to a prompt/response entry. Seeding a bounded set of turns is safe
+    /// because `Conversation.messageLimit` and the token budget cap how far a segment can grow.
+    private static func makeTranscript(summary: String?, messages: [ChatMessage]) -> Transcript {
         var entries: [Transcript.Entry] = [
             .instructions(Transcript.Instructions(
                 id: "instructions",
-                segments: [.text(Transcript.TextSegment(id: "instructions-text", content: chatInstructionsText))],
+                segments: [.text(Transcript.TextSegment(
+                    id: "instructions-text",
+                    content: instructionsContent(summary: summary)
+                ))],
                 toolDefinitions: []
             ))
         ]
 
-        for message in history {
+        for message in messages {
             // App-generated error/availability notices are not model output; seeding them would
             // teach the rehydrated session it said "Sorry, I couldn't finish that." itself.
+            // (Compaction markers are excluded upstream by `Compaction.liveMessages`.)
             guard !message.isError else { continue }
             let content = seededContent(for: message)
             guard !content.isEmpty else { continue }
@@ -227,17 +281,137 @@ final class ChatEngine {
     /// and leave the real in-flight turn uncancellable. Guard the flag and cancel any not-yet-run
     /// predecessor so the handle always points at the one live turn.
     func submit(_ raw: String, asImage: Bool) {
-        guard !isResponding else { return }
+        guard !isResponding, !isCompacting else { return }
         cancelActiveTurn()
         activeTurn = Task { [weak self] in await self?.send(raw, asImage: asImage) }
     }
 
     /// Cancels the in-flight turn (if any). The streaming loop checks `Task.isCancelled` and stops
     /// writing, and `send` skips its trailing persistence so a torn-down/deleted conversation isn't
-    /// touched.
+    /// touched. Also covers an in-flight compaction (it shares `activeTurn`).
     func cancelActiveTurn() {
         activeTurn?.cancel()
         activeTurn = nil
+    }
+
+    /// Compacts the conversation in place: summarizes the turns since the last compaction, drops
+    /// a "Conversation compacted" divider, and rebuilds the session from the summary plus a short
+    /// verbatim tail — so the chat keeps going under the same `id` (and same OTLP session) instead
+    /// of hitting a dead end at capacity. Manual only, driven by the capacity banner's Continue
+    /// button. Runs as a tracked task so leaving the conversation cancels it, like a normal turn.
+    func compact() {
+        guard !isResponding, !isCompacting, isAtCapacity else { return }
+        cancelActiveTurn()
+        activeTurn = Task { [weak self] in await self?.performCompaction() }
+    }
+
+    private func performCompaction() async {
+        guard let conversation, let modelContext, let session else { return }
+        guard !Task.isCancelled else { return }
+
+        // Re-check availability at the moment of use — summarization needs the model too.
+        refreshAvailability()
+        if let availabilityMessage {
+            insertErrorNotice(availabilityMessage, into: conversation, context: modelContext)
+            return
+        }
+
+        let ordered = conversation.orderedMessages
+        // Summarize every live turn since the last compaction; the divider is appended at the end,
+        // so the model continues from the summary alone (no verbatim tail kept).
+        let toSummarize = Compaction.liveMessages(in: ordered)
+        // Nothing to condense — compaction can't reclaim anything. Shouldn't happen while at
+        // capacity (the segment is non-empty then), but guard rather than insert an empty divider.
+        guard !toSummarize.isEmpty else { return }
+        let previousSummary = Compaction.activeSummary(in: ordered)
+
+        compactionGeneration += 1
+        let generation = compactionGeneration
+        isCompacting = true
+        // Only clear the flag if this is still the current compaction — a superseded task
+        // unwinding late must not re-enable the controls under a newer one.
+        defer { if generation == compactionGeneration { isCompacting = false } }
+
+        let start = Date.now
+        let summary: String
+        do {
+            summary = try await Self.summarize(previousSummary: previousSummary, messages: toSummarize)
+        } catch {
+            // Surface a friendly notice and insert no marker, so the user can retry from the still-
+            // showing capacity banner. Skip if the turn was abandoned (view gone / thread switched).
+            guard !Task.isCancelled, !conversation.isDeleted else { return }
+            insertErrorNotice(friendlyMessage(for: error), into: conversation, context: modelContext)
+            return
+        }
+        let end = Date.now
+
+        // The user navigated away or deleted the thread while summarizing — don't touch the store.
+        guard !Task.isCancelled, !conversation.isDeleted else { return }
+        // The session that produced this summary may have been swapped by a thread change.
+        guard self.session === session else { return }
+        // An empty summary would silently discard the compacted context (folded-in summary becomes
+        // nothing) — treat it as a failure so the user can retry rather than losing the history.
+        guard !summary.isEmpty else {
+            insertErrorNotice(friendlyMessage(for: CompactionError.emptySummary), into: conversation, context: modelContext)
+            return
+        }
+
+        // Appended at the end (default `createdAt` of now sorts after every existing turn), so the
+        // divider renders at the seam and the auto-scroll on message insertion brings it into view.
+        let marker = ChatMessage(role: .assistant, text: summary)
+        marker.isCompactionSummary = true
+        marker.conversation = conversation
+        modelContext.insert(marker)
+        conversation.updatedAt = .now
+        modelContext.saveOrLog()
+
+        // Rebuild the working session from the now-compacted history: summary folded into
+        // instructions + the short verbatim tail. This is what frees the context budget.
+        self.session = Self.makeSession(for: conversation.orderedMessages)
+        await refreshTokenUsage()
+
+        // Report the summarization as its own `feature: "compaction"` span so it doesn't look like a
+        // normal chat turn. Detached and snapshotted so it never delays teardown.
+        let conversationID = conversation.id
+        Task { [weak self] in
+            await self?.recordCompactionTelemetry(conversationID: conversationID, summary: summary, start: start, end: end)
+        }
+    }
+
+    /// Summarizes `messages` (optionally folding in the prior summary so compaction is cumulative)
+    /// using a throwaway session — kept separate from the live chat session so this internal call
+    /// never lands in the conversation's own transcript.
+    private static func summarize(previousSummary: String?, messages: [ChatMessage]) async throws -> String {
+        let summarizer = LanguageModelSession(instructions: Instructions(summaryInstructionsText))
+        var lines: [String] = []
+        if let previousSummary, !previousSummary.isEmpty {
+            lines.append("Summary of the conversation so far:\n\(previousSummary)\n")
+        }
+        for message in messages {
+            let speaker = message.role == .user ? "User" : "Assistant"
+            lines.append("\(speaker): \(seededContent(for: message))")
+        }
+        let prompt = "Summarize this conversation:\n\n" + lines.joined(separator: "\n")
+        let response = try await summarizer.respond(to: prompt)
+        return response.content.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Failures specific to compaction that reuse the shared friendly-message path.
+    private enum CompactionError: Error {
+        /// The model returned an empty summary — inserting it would silently drop the context.
+        case emptySummary
+    }
+
+    /// Inserts an app-generated error/availability notice as an assistant message. Marked `isError`
+    /// so it's kept out of the rehydrated transcript and doesn't count toward capacity.
+    private func insertErrorNotice(_ text: String, into conversation: Conversation, context: ModelContext) {
+        guard !conversation.isDeleted else { return }
+        let notice = ChatMessage(role: .assistant, text: text)
+        notice.isError = true
+        notice.conversation = conversation
+        context.insert(notice)
+        conversation.updatedAt = .now
+        context.saveOrLog()
     }
 
     /// Appends the user's message, then a model reply — which may include a tool-generated image
@@ -395,6 +569,33 @@ final class ChatEngine {
             prompt: userText,
             completion: assistantText,
             inputTokens: inputTokens,
+            outputTokens: outputTokens,
+            start: start,
+            end: end
+        )
+    }
+
+    /// Reports a compaction as an `ondas.llm` span tagged `feature: "compaction"`, so the internal
+    /// summarization is counted and separable from real chat turns rather than masquerading as one.
+    /// The summary is forwarded as the completion (attached only when transcript capture is on).
+    /// No-ops when telemetry is disabled.
+    private func recordCompactionTelemetry(
+        conversationID: UUID,
+        summary: String,
+        start: Date,
+        end: Date
+    ) async {
+        guard await TelemetryService.shared.isDeliverable else { return }
+        var outputTokens = 0
+        if #available(iOS 26.4, *) {
+            outputTokens = (try? await SystemLanguageModel.default.tokenCount(for: summary)) ?? 0
+        }
+        await TelemetryService.shared.recordLLM(
+            conversationID: conversationID,
+            feature: "compaction",
+            prompt: "",
+            completion: summary,
+            inputTokens: 0,
             outputTokens: outputTokens,
             start: start,
             end: end

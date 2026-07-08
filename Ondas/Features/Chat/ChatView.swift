@@ -47,9 +47,12 @@ struct ChatView: View {
     /// away from the bottom can be attributed to them rather than to our own auto-scroll.
     @State private var isUserScrolling = false
 
-    /// Live distance in points from the bottom of the transcript, driving both the auto-scroll
-    /// release/re-engage decision and the jump-to-bottom button's visibility.
-    @State private var distanceFromBottom: CGFloat = 0
+    /// Whether the jump-to-bottom button is shown — i.e. the user has scrolled well clear of the
+    /// bottom. Stored as a threshold-crossed `Bool` rather than the live distance so a scroll only
+    /// writes state when the value actually flips. Writing continuous geometry here re-invalidated
+    /// `body` (which reads this state) on every scroll tick, re-triggering layout and the geometry
+    /// callback in a loop that never settled on Mac Catalyst — a scroll would hang the app.
+    @State private var showJumpButton = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -98,13 +101,9 @@ struct ChatView: View {
             ScrollView {
                 LazyVStack(spacing: 12) {
                     ForEach(messages) { message in
-                        MessageBubble(
-                            message: message,
-                            isAwaitingResponse: engine.isResponding && message.isEmptyPlaceholder,
-                            isStreaming: isStreaming(message, latest: messages.last)
-                        )
-                        .id(message.id)
-                        .transition(.messageInsertion)
+                        messageRow(message, latest: messages.last)
+                            .id(message.id)
+                            .transition(.messageInsertion)
                     }
                 }
                 .padding(.horizontal)
@@ -122,16 +121,21 @@ struct ChatView: View {
                 max(0, geometry.contentSize.height
                     - geometry.contentOffset.y - geometry.containerSize.height)
             } action: { _, distance in
-                distanceFromBottom = distance
+                // Only mutate state on an actual threshold crossing. Writing on every geometry
+                // callback re-invalidated `body` (which reads this state), re-triggering layout and
+                // this very callback in a loop that never settled on Mac Catalyst (a scroll hung
+                // the app). Guarding every write keeps a steady scroll from touching state at all.
                 if distance <= Self.atBottomThreshold {
                     // Back at the bottom (whether the user scrolled there or our own auto-scroll
                     // did) — follow the generation again.
-                    autoScroll = true
-                } else if isUserScrolling {
+                    if !autoScroll { autoScroll = true }
+                } else if isUserScrolling, autoScroll {
                     // The user scrolled away from the bottom: hand them control and stay put.
                     // Growth from streamed text (not user-driven) never trips this.
                     autoScroll = false
                 }
+                let shouldShowJump = distance > Self.jumpButtonThreshold
+                if shouldShowJump != showJumpButton { showJumpButton = shouldShowJump }
             }
             .onScrollPhaseChange { _, phase in
                 isUserScrolling = phase == .tracking
@@ -161,6 +165,22 @@ struct ChatView: View {
         }
     }
 
+    /// One row in the transcript: a compaction divider for a summary marker, otherwise a message
+    /// bubble. Split out so the SwiftUI type-checker stays fast (an inline `if` inside `ForEach`
+    /// pushed it over its time budget).
+    @ViewBuilder
+    private func messageRow(_ message: ChatMessage, latest: ChatMessage?) -> some View {
+        if message.isCompactionSummary {
+            CompactionDivider()
+        } else {
+            MessageBubble(
+                message: message,
+                isAwaitingResponse: engine.isResponding && message.isEmptyPlaceholder,
+                isStreaming: isStreaming(message, latest: latest)
+            )
+        }
+    }
+
     private func jumpToBottomButton(_ proxy: ScrollViewProxy) -> some View {
         Button {
             autoScroll = true
@@ -187,12 +207,6 @@ struct ChatView: View {
             && message.role == .assistant
             && !message.text.isEmpty
             && message.id == latest?.id
-    }
-
-    /// The button offers a way back to the latest message once the user has scrolled well clear
-    /// of the bottom (i.e. auto-scroll has been released and they're reading history).
-    private var showJumpButton: Bool {
-        distanceFromBottom > Self.jumpButtonThreshold
     }
 
     /// Slack for treating the transcript as "at the bottom" — small, so any deliberate scroll-up
@@ -244,15 +258,30 @@ struct ChatView: View {
     private var capacityBanner: some View {
         HStack(spacing: 12) {
             Label(
-                "This chat is full. Start a new one to keep going.",
-                systemImage: "checkmark.seal.fill"
+                engine.isCompacting ? "Compacting the conversation…" : "This chat is full.",
+                systemImage: engine.isCompacting ? "arrow.triangle.merge" : "checkmark.seal.fill"
             )
             .font(.footnote)
             .foregroundStyle(.secondary)
             Spacer(minLength: 0)
             Button("New Chat", action: onStartNewChat)
                 .font(.footnote.weight(.semibold))
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.bordered)
+                .disabled(engine.isCompacting)
+            // Compaction summarizes the older turns into a divider and keeps going in the same
+            // conversation, rather than forcing the user into a brand-new thread.
+            Button {
+                engine.compact()
+            } label: {
+                if engine.isCompacting {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Text("Continue")
+                }
+            }
+            .font(.footnote.weight(.semibold))
+            .buttonStyle(.borderedProminent)
+            .disabled(engine.isCompacting || engine.availabilityMessage != nil)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal)
