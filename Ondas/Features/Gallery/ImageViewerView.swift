@@ -24,20 +24,27 @@ struct ImageViewerView: View {
 
     var body: some View {
         NavigationStack {
-            ZStack {
-                Color.black.ignoresSafeArea()
-                imageContent
-            }
-            .toolbar { toolbarContent }
-            .toolbarBackground(.visible, for: .navigationBar)
-            .safeAreaInset(edge: .bottom) { actionBar }
-            .alert("Photos Access Needed", isPresented: $showDeniedAlert) {
-                Button("Open Settings") { openSettings() }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("Allow adding to your photo library in Settings to save this image.")
-            }
+            imageContent
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color(.systemGroupedBackground).ignoresSafeArea())
+                .navigationTitle(navigationTitle)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar { toolbarContent }
+                .toolbarBackground(.visible, for: .navigationBar)
+                .safeAreaInset(edge: .bottom) { actionBar }
+                .alert("Photos Access Needed", isPresented: $showDeniedAlert) {
+                    Button("Open Settings") { openSettings() }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("Allow adding to your photo library in Settings to save this image.")
+                }
         }
+    }
+
+    /// A short heading for the top bar: the prompt for a standalone image, or a generic label for a
+    /// chat image (which carries no separate prompt). Keeps the bar from showing just a lone Done.
+    private var navigationTitle: String {
+        item.prompt.isEmpty ? "Image" : item.prompt
     }
 
     private var imageContent: some View {
@@ -46,6 +53,9 @@ struct ImageViewerView: View {
                 Image(uiImage: uiImage)
                     .resizable()
                     .scaledToFit()
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .shadow(color: .black.opacity(0.18), radius: 14, y: 6)
+                    .padding(24)
                     .scaleEffect(zoom * pinch)
                     .gesture(magnification)
                     .onTapGesture(count: 2) {
@@ -53,7 +63,6 @@ struct ImageViewerView: View {
                     }
             } else {
                 ContentUnavailableView("Couldn't Load Image", systemImage: "photo")
-                    .foregroundStyle(.white)
             }
         }
     }
