@@ -12,6 +12,10 @@ struct OndasApp: App {
         // model usage this session can be reported. Fire-and-forget: the actor updates itself.
         let config = TelemetrySettingsStore().currentConfig()
         Task { await TelemetryService.shared.update(config) }
+
+        // CloudKit sync failures are otherwise silent (no throw, no crash) — start observing so a
+        // sync problem shows up as a status line in Settings instead of just "chats aren't syncing".
+        CloudKitSyncMonitor.shared.start()
     }
 
     var body: some Scene {

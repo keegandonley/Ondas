@@ -73,6 +73,7 @@ final class ChatEngine {
     private var conversation: Conversation?
     private var modelContext: ModelContext?
     private var session: LanguageModelSession?
+    private let generationSettings = GenerationSettingsStore()
 
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.keegancodes.ondas",
@@ -396,22 +397,22 @@ final class ChatEngine {
         }
     }
 
-    /// Runs one model turn against `session`. On an image turn `session` carries the image tool and
-    /// `collector` is non-nil; any image the model generates is drained from `collector` and
-    /// attached. On a non-image turn there is no tool and `collector` is nil, so the model can only
-    /// reply in text. Returns `true` if the turn failed (so the caller can pick an error haptic).
-    /// Streams a plain text reply from the model into `assistant`. Returns whether the turn failed.
+    /// Streams a plain text reply from the model into `assistant`, using the user's chosen response
+    /// style (temperature). Returns whether the turn failed (so the caller can pick an error haptic).
     private func respond(
         to text: String,
         session: LanguageModelSession,
         into assistant: ChatMessage
     ) async -> Bool {
+        // Read fresh each turn so a change in Settings (Precise/Balanced/Creative) applies to the
+        // very next message. `.balanced` maps to `nil`, leaving the model's own default temperature.
+        let options = GenerationOptions(temperature: generationSettings.load().temperature)
         do {
             // Stream the reply so text appears token-by-token instead of all at once. Each
             // snapshot carries the full response so far, so assigning it directly keeps
             // `assistant.text` correct without manual concatenation. These in-memory updates
             // drive the UI via @Observable; the turn is persisted once it completes (see `send`).
-            for try await snapshot in session.streamResponse(to: text) {
+            for try await snapshot in session.streamResponse(to: text, options: options) {
                 // Stop writing into the message once the turn is cancelled (view gone / thread
                 // switched or deleted), rather than mutating an abandoned model each token.
                 if Task.isCancelled { break }

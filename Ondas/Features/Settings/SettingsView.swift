@@ -7,6 +7,8 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
 
     private let store = TelemetrySettingsStore()
+    private let generationSettings = GenerationSettingsStore()
+    private let syncMonitor = CloudKitSyncMonitor.shared
 
     @State private var isEnabled = false
     @State private var sendTranscripts = false
@@ -14,6 +16,7 @@ struct SettingsView: View {
     @State private var apiKey = ""
     @State private var testResult: TestResult?
     @State private var isTesting = false
+    @State private var responseStyle: ResponseStyle = .balanced
 
     private enum TestResult {
         case success
@@ -35,6 +38,23 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    LabeledContent("iCloud Sync", value: syncMonitor.status ?? "No sync activity yet")
+                } footer: {
+                    Text("Reflects the most recent CloudKit sync attempt for your chats.")
+                }
+
+                Section {
+                    Picker("Response style", selection: $responseStyle) {
+                        ForEach(ResponseStyle.allCases) { style in
+                            Text(style.label).tag(style)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                } footer: {
+                    Text(responseStyle.footer)
+                }
+
                 Section {
                     Toggle("Send usage telemetry", isOn: $isEnabled)
                 } footer: {
@@ -91,7 +111,7 @@ struct SettingsView: View {
                     }
                 }
             }
-            .navigationTitle("Telemetry")
+            .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -108,9 +128,11 @@ struct SettingsView: View {
         sendTranscripts = values.sendTranscripts
         endpoint = values.endpoint
         apiKey = values.apiKey
+        responseStyle = generationSettings.load()
     }
 
     private func saveAndDismiss() {
+        generationSettings.save(responseStyle)
         store.save(
             isEnabled: isEnabled,
             sendTranscripts: sendTranscripts,
