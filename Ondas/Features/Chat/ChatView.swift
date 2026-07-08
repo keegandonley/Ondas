@@ -24,6 +24,16 @@ struct ChatView: View {
     /// is otherwise a hair taller than one line of text, which made the field visibly jump on toggle.
     @ScaledMetric(relativeTo: .body) private var composerFieldHeight: CGFloat = 24
 
+    /// Vertical padding inside the input capsule, doubled for top+bottom.
+    private static let composerVerticalPadding: CGFloat = 9
+
+    /// Full height of the single-line input capsule. The leading image button and trailing send
+    /// button are sized to this so they center on the input's one line, and — because the row is
+    /// bottom-aligned — drop to the last line when the field grows.
+    private var composerRowHeight: CGFloat {
+        composerFieldHeight + Self.composerVerticalPadding * 2
+    }
+
     /// True when the composer is in image mode — entered by typing the `/image` command, shown as a
     /// highlighted chip. The next send is an explicit image request; `draft` holds just the prompt.
     @State private var isImageMode = false
@@ -266,7 +276,7 @@ struct ChatView: View {
             }
             .frame(minHeight: composerFieldHeight)
             .padding(.horizontal, 14)
-            .padding(.vertical, 9)
+            .padding(.vertical, Self.composerVerticalPadding)
             .background(Theme.assistantBubble, in: Capsule())
             .disabled(engine.isAtCapacity)
 
@@ -283,6 +293,7 @@ struct ChatView: View {
             // runaway generation can be halted); otherwise it's the send button, gated by `canSend`.
             .disabled(engine.isResponding ? false : !canSend)
             .accessibilityLabel(engine.isResponding ? "Stop generating" : "Send message")
+            .frame(height: composerRowHeight)
         }
         .padding(.horizontal)
         .padding(.vertical, 10)
@@ -303,6 +314,7 @@ struct ChatView: View {
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(isImageMode ? AnyShapeStyle(Theme.userBubble) : AnyShapeStyle(.secondary))
         }
+        .frame(height: composerRowHeight)
         .disabled(engine.isAtCapacity)
         .accessibilityLabel(isImageMode ? "Turn off image generation" : "Generate an image")
     }
