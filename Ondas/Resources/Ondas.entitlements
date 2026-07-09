@@ -1,5 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- iPhone/iPad entitlements. The menu-bar quick-chat is Mac-only, so the iOS build carries NONE
+     of its capabilities (App Groups, shared keychain group) — this stays identical to the
+     pre-feature entitlements so the iOS App Store archive signs exactly as it did before. The
+     macOS/Catalyst build uses Ondas-macCatalyst.entitlements instead, selected via
+     CODE_SIGN_ENTITLEMENTS + $(IS_MACCATALYST) in project.yml (iOS and Catalyst share the same SDK,
+     so an [sdk=…] condition can't distinguish them). Hand-maintained (not XcodeGen-generated). -->
 <plist version="1.0">
 <dict>
 	<key>aps-environment</key>
@@ -16,16 +22,7 @@
 	<string>$(TeamIdentifierPrefix)com.keegancodes.ondas</string>
 	<key>com.apple.security.app-sandbox</key>
 	<true/>
-	<key>com.apple.security.application-groups</key>
-	<array>
-		<string>group.com.keegancodes.ondas</string>
-		<string>$(TeamIdentifierPrefix)com.keegancodes.ondas</string>
-	</array>
 	<key>com.apple.security.network.client</key>
 	<true/>
-	<key>keychain-access-groups</key>
-	<array>
-		<string>$(AppIdentifierPrefix)com.keegancodes.ondas.shared</string>
-	</array>
 </dict>
 </plist>

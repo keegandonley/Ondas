@@ -59,6 +59,15 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: true
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        # Per-platform entitlements. iOS and Mac Catalyst share the iphoneos SDK, so an [sdk=…]
+        # condition can't tell them apart; use $(IS_MACCATALYST) value-indirection instead. The Mac
+        # build gets the menu-bar capabilities (team-scoped App Group + shared keychain group); the
+        # iOS build gets NEITHER, so its App Store archive signs exactly as it did before the feature
+        # (an App Group entitlement the App ID isn't set up for breaks automatic signing there).
+        CODE_SIGN_ENTITLEMENTS: $(CODE_SIGN_ENTITLEMENTS_$(IS_MACCATALYST))
+        CODE_SIGN_ENTITLEMENTS_YES: Ondas/Resources/Ondas-macCatalyst.entitlements
+        CODE_SIGN_ENTITLEMENTS_NO: Ondas/Resources/Ondas.entitlements
+        "CODE_SIGN_ENTITLEMENTS_": Ondas/Resources/Ondas.entitlements
     dependencies:
       # Embed the macOS menu-bar agent as a login-item helper (Contents/Library/LoginItems), which
       # is where SMAppService expects it. Catalyst-only — an iPhone/iPad app can't embed a macOS
@@ -71,33 +80,9 @@ targets:
           destination: wrapper
           subpath: Contents/Library/LoginItems
         destinationFilters: [macCatalyst]
-    entitlements:
-      path: Ondas/Resources/Ondas.entitlements
-      properties:
-        # Distribution (App Store / TestFlight) builds must request the production
-        # APNs environment; the managed distribution profile only grants production.
-        # TestFlight and the App Store both route through production APNs.
-        aps-environment: production
-        com.apple.developer.icloud-container-identifiers:
-          - iCloud.com.keegancodes.ondas
-        com.apple.developer.icloud-services:
-          - CloudKit
-        # Shared App Group so the macOS menu-bar agent (separate process) opens the same SwiftData
-        # store as the app. BOTH forms are declared: iPhone/iPad use the `group.` container, while
-        # the Mac (Catalyst app + agent) uses the team-scoped `$(TeamIdentifierPrefix)…` one —
-        # `AppInfo.appGroupID` picks per platform. On macOS the team-scoped form avoids the
-        # per-launch "access data from other apps" consent prompt that `group.` triggers; the
-        # `group.` entry is harmless there because the Mac code never touches that container.
-        com.apple.security.application-groups:
-          - group.com.keegancodes.ondas
-          - $(TeamIdentifierPrefix)com.keegancodes.ondas
-        # Shared keychain access group so the agent can read the telemetry bearer key the app
-        # stored in the Keychain. The system uses the first entry here as the default access group
-        # for reads/writes, so both targets sharing this one group share the item. Suffix must match
-        # on both targets; `$(AppIdentifierPrefix)` resolves to the team prefix at signing.
-        keychain-access-groups:
-          - $(AppIdentifierPrefix)com.keegancodes.ondas.shared
-        com.apple.developer.ubiquity-kvstore-identifier: "$(TeamIdentifierPrefix)com.keegancodes.ondas"
+    # Entitlements are hand-maintained per-platform files (Ondas.entitlements for iOS,
+    # Ondas-macCatalyst.entitlements for Mac) selected by CODE_SIGN_ENTITLEMENTS above — no
+    # XcodeGen `entitlements:` block, which would generate a single shared file.
         # Sandboxed Mac Catalyst blocks CloudKit traffic without the network-client
         # entitlement; declared here so `xcodegen generate` never drops it.
         com.apple.security.app-sandbox: true

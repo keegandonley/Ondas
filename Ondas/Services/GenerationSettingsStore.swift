@@ -45,10 +45,9 @@ struct GenerationSettingsStore {
         static let responseStyle = "generation.responseStyle"
     }
 
-    // The shared-container store so the menu-bar agent reads the same response-style the user picked
-    // in the app's Settings (process-local `UserDefaults.standard` would be invisible across the
-    // process boundary). See `ContainerPreferences` for why this isn't a `UserDefaults` suite.
-    init(defaults: KeyValueStore = ContainerPreferences.shared) {
+    // The platform-appropriate shared store (App-Group container on Mac so the menu-bar agent reads
+    // the same response-style; process-local `UserDefaults` on iOS). See `SharedSettings`.
+    init(defaults: KeyValueStore = SharedSettings.store) {
         self.defaults = defaults
     }
 

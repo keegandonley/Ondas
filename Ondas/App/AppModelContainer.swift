@@ -18,18 +18,22 @@ enum AppModelContainer {
     static let schema = Schema(models)
 
     private static func buildContainer(inMemory: Bool, cloudKit: Bool) throws -> ModelContainer {
+        // The shared App Group container only applies on macOS/Catalyst, where the menu-bar agent
+        // opens the *same* store. iOS has no agent — and can't carry the App Group entitlement through
+        // App Store signing — so it keeps the store in the app's own default container, as before.
+        // (On macOS this is a store-LOCATION change from earlier builds; SwiftData doesn't migrate
+        // across container boundaries, but the store is CloudKit-mirrored so existing conversations
+        // re-sync down from iCloud into the new container — allow a moment on first launch.)
+        let groupContainer: ModelConfiguration.GroupContainer
+        #if targetEnvironment(macCatalyst) || os(macOS)
+        groupContainer = inMemory ? .none : .identifier(AppInfo.appGroupID)
+        #else
+        groupContainer = .none
+        #endif
         let configuration = ModelConfiguration(
             schema: schema,
             isStoredInMemoryOnly: inMemory,
-            // The persistent store lives in the shared App Group so the Catalyst app and the macOS
-            // menu-bar agent (a separate process) open the *same* database. In-memory stores
-            // (previews/tests) stay local.
-            // NOTE: this is a store-LOCATION change from earlier builds (which used the app's own
-            // sandbox container). SwiftData doesn't migrate across container boundaries, but the
-            // store is CloudKit-mirrored, so existing conversations re-sync down into the new
-            // container from iCloud rather than being lost — allow a moment on the first launch after
-            // upgrade for that import.
-            groupContainer: inMemory ? .none : .identifier(AppInfo.appGroupID),
+            groupContainer: groupContainer,
             // Only ONE process mirrors to CloudKit — the always-running app. The agent opens the
             // shared store local-only (it only runs while the app does), so writes from either side
             // reach the store via persistent history and the app mirrors them; two concurrent

@@ -12,6 +12,21 @@ protocol KeyValueStore {
 
 extension UserDefaults: KeyValueStore {}
 
+/// The platform-appropriate store for shared settings (response style, telemetry prefs).
+///
+/// On macOS/Catalyst it's the App-Group-container plist (shared with the menu-bar agent). On iOS it's
+/// process-local `UserDefaults` — there's no agent to share with, and the iOS App Store build can't
+/// carry the App Group entitlement, so `ContainerPreferences` would have no container there.
+enum SharedSettings {
+    static var store: KeyValueStore {
+        #if targetEnvironment(macCatalyst) || os(macOS)
+        ContainerPreferences.shared
+        #else
+        UserDefaults.standard
+        #endif
+    }
+}
+
 /// Preferences shared between the app and the menu-bar agent, stored as a plist in the shared App
 /// Group container.
 ///
