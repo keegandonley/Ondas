@@ -24,8 +24,11 @@ enum AppModelContainer {
         // (On macOS this is a store-LOCATION change from earlier builds; SwiftData doesn't migrate
         // across container boundaries, but the store is CloudKit-mirrored so existing conversations
         // re-sync down from iCloud into the new container — allow a moment on first launch.)
+        // The shared App Group container is used by the menu-bar agent (native macOS) and by a
+        // Catalyst app built WITH the menu bar (`ONDAS_MENUBAR`). The App Store app (and iOS) ship
+        // without the menu bar, so they keep the store in the app's own default container.
         let groupContainer: ModelConfiguration.GroupContainer
-        #if targetEnvironment(macCatalyst) || os(macOS)
+        #if os(macOS) || (targetEnvironment(macCatalyst) && ONDAS_MENUBAR)
         groupContainer = inMemory ? .none : .identifier(AppInfo.appGroupID)
         #else
         groupContainer = .none

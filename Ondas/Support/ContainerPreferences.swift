@@ -19,7 +19,7 @@ extension UserDefaults: KeyValueStore {}
 /// carry the App Group entitlement, so `ContainerPreferences` would have no container there.
 enum SharedSettings {
     static var store: KeyValueStore {
-        #if targetEnvironment(macCatalyst) || os(macOS)
+        #if os(macOS) || (targetEnvironment(macCatalyst) && ONDAS_MENUBAR)
         ContainerPreferences.shared
         #else
         UserDefaults.standard

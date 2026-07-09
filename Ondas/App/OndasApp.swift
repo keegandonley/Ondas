@@ -7,9 +7,10 @@ struct OndasApp: App {
     /// with no account or sign-up.
     private let modelContainer = AppModelContainer.make()
 
-    #if targetEnvironment(macCatalyst)
-    // Starts/stops the macOS menu-bar agent alongside the app. Catalyst only — iPhone/iPad have
-    // no menu bar.
+    #if targetEnvironment(macCatalyst) && ONDAS_MENUBAR
+    // Starts/stops the macOS menu-bar agent alongside the app. Only in `ONDAS_MENUBAR` builds (the
+    // direct-distribution variant) — the Mac App Store build ships without the menu-bar item, since
+    // its App Group + embedded agent aren't App-Store-distributable.
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     #endif
 

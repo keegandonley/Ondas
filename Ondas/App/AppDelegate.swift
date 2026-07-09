@@ -1,4 +1,4 @@
-#if targetEnvironment(macCatalyst)
+#if targetEnvironment(macCatalyst) && ONDAS_MENUBAR
 import OSLog
 import ServiceManagement
 import UIKit
