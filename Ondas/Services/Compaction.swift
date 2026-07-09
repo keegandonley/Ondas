@@ -33,7 +33,7 @@ enum Compaction {
     }
 
     /// The message count the capacity fallback compares against `Conversation.messageLimit`: the
-    /// live turns since the last compaction. (Token counting is the primary budget on iOS 26.4+.)
+    /// live turns since the last compaction. (Token counting is the primary budget when available.)
     static func capacityCount(in ordered: [ChatMessage]) -> Int {
         liveMessages(in: ordered).count
     }

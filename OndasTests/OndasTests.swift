@@ -183,8 +183,8 @@ struct OndasTests {
     }
 
     @Test func conversationCapacityStateCrossesApproachingThenFull() {
-        // The message-count fallback path (pre-iOS 26.4): normal below the suggested count,
-        // approaching from it up to the hard cap, full at the cap.
+        // The message-count fallback path (used when a token count is unavailable): normal below the
+        // suggested count, approaching from it up to the hard cap, full at the cap.
         #expect(conversation(liveMessages: 31).capacityState == .normal)
         #expect(conversation(liveMessages: Conversation.compactionSuggestedCount).capacityState == .approaching)
         #expect(conversation(liveMessages: Conversation.messageLimit - 1).capacityState == .approaching)

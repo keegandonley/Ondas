@@ -3,8 +3,9 @@ options:
   bundleIdPrefix: com.keegancodes
   deploymentTarget:
     # FoundationModels (Apple Intelligence on-device LLM) and the GA image-generation
-    # APIs require iOS 26.
-    iOS: "26.0"
+    # APIs require iOS 26. Pinned to 26.4 for `SystemLanguageModel.tokenCount`, which
+    # backs the real token budget (context meter + capacity warning) for every user.
+    iOS: "26.4"
   createIntermediateGroups: true
   generateEmptyDirectories: true
 

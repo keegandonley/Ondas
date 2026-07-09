@@ -32,7 +32,7 @@ final class Conversation {
     static let messageLimit = 40
 
     /// Message count at which the chat starts suggesting compaction — the message-count mirror of
-    /// `TokenUsage.warningFraction`, used only on the pre-iOS 26.4 fallback path (no token counting).
+    /// `TokenUsage.warningFraction`, used only on the fallback path when a token count is unavailable.
     /// Kept below `messageLimit` so the nudge arrives with room to summarize, not at the wall.
     static let compactionSuggestedCount = Int(Double(messageLimit) * TokenUsage.warningFraction)
 
@@ -64,9 +64,9 @@ final class Conversation {
         !(messages ?? []).isEmpty
     }
 
-    /// Capacity standing from the message-count cap — the fallback used only when token counting is
-    /// unavailable (pre-iOS 26.4 or a failed count); on iOS 26.4+ `ChatEngine.tokenUsage` is the
-    /// primary defense. Only the turns since the last compaction count (see `Compaction.capacityCount`):
+    /// Capacity standing from the message-count cap — the fallback used only when a token count is
+    /// unavailable (a failed/undeterminable count); otherwise `ChatEngine.tokenUsage` is the primary
+    /// defense. Only the turns since the last compaction count (see `Compaction.capacityCount`):
     /// compaction summarizes older turns into a divider and continues in place, so a compacted chat
     /// must not stay stuck at capacity. Error notices are excluded too — they're kept out of the
     /// rehydrated transcript, so they consume none of the context budget this cap proxies.

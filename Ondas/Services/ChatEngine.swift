@@ -84,8 +84,8 @@ final class ChatEngine {
     /// Non-nil when the on-device language model can't run, carrying a user-facing reason.
     private(set) var availabilityMessage: String?
 
-    /// Live token usage for the current conversation, or nil when token counting isn't available
-    /// (before iOS 26.4, or a count failed) — in which case the message-count cap applies instead.
+    /// Live token usage for the current conversation, or nil when a token count fails (or the window
+    /// is undeterminable) — in which case the message-count cap applies instead.
     private(set) var tokenUsage: TokenUsage?
 
     /// Marks the most recently completed turn so the view can fire a completion/error haptic.
@@ -109,7 +109,7 @@ final class ChatEngine {
     private static let logger = Logger(subsystem: AppInfo.bundleID, category: "ChatEngine")
 
     /// The conversation's standing against the context budget. Prefers the real token budget; falls
-    /// back to the message-count cap when token counting is unavailable (pre-iOS 26.4 or a failed
+    /// back to the message-count cap only when a token count is unavailable (a failed/undeterminable
     /// count). `.approaching` still accepts input (and offers compaction); `.full` does not.
     var capacityState: CapacityState {
         if let tokenUsage {
@@ -266,14 +266,10 @@ final class ChatEngine {
     }
 
     /// Recomputes `tokenUsage` from the session's live transcript against the model's context
-    /// window. Token counting is iOS 26.4+; on earlier systems (or if a count throws), `tokenUsage`
-    /// is cleared and capacity falls back to the message-count cap.
+    /// window. If the count throws (or the window is undeterminable), `tokenUsage` is cleared and
+    /// capacity falls back to the message-count cap.
     private func refreshTokenUsage() async {
         guard let session else { return }
-        guard #available(iOS 26.4, *) else {
-            tokenUsage = nil
-            return
-        }
         let model = SystemLanguageModel.default
         // `contextSize` is the model's full window; hold back a reserve for the reply. If the
         // window is somehow no larger than the reserve, treat the budget as undeterminable and
@@ -582,12 +578,11 @@ final class ChatEngine {
 
         var inputTokens = 0
         var outputTokens = 0
-        // Token counting is iOS 26.4+ only. Report this turn's *marginal* tokens: `completion` is the
-        // reply; `prompt` is the new input added this turn (the user's message) — the growth in
-        // transcript size since the previous turn, minus the reply. This keeps
-        // `llm.token_count.prompt` a per-call figure comparable to the cache-aware claude_code/
-        // opencode sources, instead of the whole ever-growing conversation context.
-        if #available(iOS 26.4, *), let currentTokenCount {
+        // Report this turn's *marginal* tokens: `completion` is the reply; `prompt` is the new input
+        // added this turn (the user's message) — the growth in transcript size since the previous
+        // turn, minus the reply. This keeps `llm.token_count.prompt` a per-call figure comparable to
+        // the cache-aware claude_code/opencode sources, instead of the whole ever-growing context.
+        if let currentTokenCount {
             outputTokens = (try? await SystemLanguageModel.default.tokenCount(for: assistantText)) ?? 0
             let addedThisTurn = max(0, currentTokenCount - (priorTokenCount ?? 0))
             inputTokens = max(0, addedThisTurn - outputTokens)
@@ -615,10 +610,7 @@ final class ChatEngine {
         end: Date
     ) async {
         guard await TelemetryService.shared.isDeliverable else { return }
-        var outputTokens = 0
-        if #available(iOS 26.4, *) {
-            outputTokens = (try? await SystemLanguageModel.default.tokenCount(for: summary)) ?? 0
-        }
+        let outputTokens = (try? await SystemLanguageModel.default.tokenCount(for: summary)) ?? 0
         await TelemetryService.shared.recordLLM(
             conversationID: conversationID,
             feature: "compaction",
