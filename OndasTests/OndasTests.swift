@@ -75,6 +75,20 @@ struct OndasTests {
         #expect(!TokenUsage(used: 3071, limit: 3072).isAtCapacity)
     }
 
+    @Test func tokenUsageIsApproachingCapacityInTheWarningBandOnly() {
+        // Warning band opens at warningFraction (0.8 → 2457/3072 ≈ 0.7998, 2458 ≈ 0.8001)…
+        #expect(!TokenUsage(used: 2457, limit: 3072).isApproachingCapacity)
+        #expect(TokenUsage(used: 2458, limit: 3072).isApproachingCapacity)
+        // …and closes again at full: an at-capacity chat is `.full`, not `.approaching`.
+        #expect(!TokenUsage(used: 3072, limit: 3072).isApproachingCapacity)
+        #expect(!TokenUsage(used: 3200, limit: 3072).isApproachingCapacity)
+    }
+
+    @Test func compactionSuggestedCountSitsBelowTheHardCap() {
+        #expect(Conversation.compactionSuggestedCount == 32)
+        #expect(Conversation.compactionSuggestedCount < Conversation.messageLimit)
+    }
+
     // MARK: Gallery merge
 
     private func makeData(_ byte: UInt8) -> Data { Data([byte]) }
@@ -159,5 +173,22 @@ struct OndasTests {
         #expect(Compaction.activeSummary(in: ordered) == "SUMMARY")
         #expect(Compaction.capacityCount(in: ordered) == 0)
         #expect(Compaction.liveMessages(in: ordered).isEmpty)
+    }
+
+    /// A conversation holding `count` live (real, non-marker) turns.
+    private func conversation(liveMessages count: Int) -> Conversation {
+        let conversation = Conversation()
+        conversation.messages = (0..<count).map { msg(.user, "m\($0)", at: Double($0)) }
+        return conversation
+    }
+
+    @Test func conversationCapacityStateCrossesApproachingThenFull() {
+        // The message-count fallback path (pre-iOS 26.4): normal below the suggested count,
+        // approaching from it up to the hard cap, full at the cap.
+        #expect(conversation(liveMessages: 31).capacityState == .normal)
+        #expect(conversation(liveMessages: Conversation.compactionSuggestedCount).capacityState == .approaching)
+        #expect(conversation(liveMessages: Conversation.messageLimit - 1).capacityState == .approaching)
+        #expect(conversation(liveMessages: Conversation.messageLimit).capacityState == .full)
+        #expect(conversation(liveMessages: Conversation.messageLimit + 5).capacityState == .full)
     }
 }

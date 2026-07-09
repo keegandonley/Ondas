@@ -57,10 +57,14 @@ struct ChatView: View {
     var body: some View {
         VStack(spacing: 0) {
             transcript
-            if engine.isAtCapacity {
-                capacityBanner
+            // Full takes precedence (its New Chat action works even when the model is down); then
+            // an availability notice; then the non-blocking "getting long" warning; then the meter.
+            if engine.capacityState == .full {
+                capacityFullBanner
             } else if let availabilityMessage = engine.availabilityMessage {
                 unavailableBanner(availabilityMessage)
+            } else if engine.capacityState == .approaching {
+                capacityWarningBanner
             } else if let usage = engine.tokenUsage {
                 tokenMeter(usage)
             }
@@ -237,7 +241,8 @@ struct ChatView: View {
     }
 
     /// A slim live meter of how much of the model's context window this conversation is using.
-    /// The bar shifts from accent → orange → red as the chat approaches its token budget.
+    /// The bar shifts from accent → orange as the chat approaches the warning band, at which point
+    /// `capacityWarningBanner` replaces the meter entirely — so the ramp lives within `[0, 0.8)`.
     private func tokenMeter(_ usage: TokenUsage) -> some View {
         VStack(spacing: 4) {
             HStack {
@@ -258,40 +263,55 @@ struct ChatView: View {
     }
 
     private func meterColor(for fraction: Double) -> Color {
-        switch fraction {
-        case ..<0.75: return .accentColor
-        case ..<0.9: return .orange
-        default: return .red
-        }
+        // The meter is only shown below the warning band, so the ramp is scaled to that range.
+        fraction < 0.6 ? .accentColor : .orange
     }
 
-    private var capacityBanner: some View {
+    /// Non-blocking nudge shown as the chat nears the context budget. The user can keep chatting;
+    /// compaction summarizes the older turns into a divider and continues in the same conversation,
+    /// which is offered here — while there's still room to summarize — rather than once the chat is
+    /// full. This branch only renders when the model is available, so the button needs no extra gate.
+    private var capacityWarningBanner: some View {
         HStack(spacing: 12) {
             Label(
-                engine.isCompacting ? "Compacting the conversation…" : "This chat is full.",
-                systemImage: engine.isCompacting ? "arrow.triangle.merge" : "checkmark.seal.fill"
+                engine.isCompacting ? "Compacting the conversation…" : "This chat is getting long.",
+                systemImage: engine.isCompacting ? "arrow.triangle.merge" : "exclamationmark.circle.fill"
             )
             .font(.footnote)
             .foregroundStyle(.secondary)
             Spacer(minLength: 0)
-            Button("New Chat", action: onStartNewChat)
-                .font(.footnote.weight(.semibold))
-                .buttonStyle(.bordered)
-                .disabled(engine.isCompacting)
-            // Compaction summarizes the older turns into a divider and keeps going in the same
-            // conversation, rather than forcing the user into a brand-new thread.
             Button {
                 engine.compact()
             } label: {
                 if engine.isCompacting {
                     ProgressView().controlSize(.small)
                 } else {
-                    Text("Continue")
+                    Text("Compact")
                 }
             }
             .font(.footnote.weight(.semibold))
             .buttonStyle(.borderedProminent)
-            .disabled(engine.isCompacting || engine.availabilityMessage != nil)
+            // `compact()` also refuses while a reply is streaming; the composer stays enabled at
+            // `.approaching`, so without this the button would be tappable but silently no-op.
+            .disabled(engine.isResponding || engine.isCompacting)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+        .background(.bar)
+    }
+
+    /// Blocking banner once the chat has filled the context budget: the conversation is now too
+    /// large to summarize reliably, so the only path forward is a fresh chat.
+    private var capacityFullBanner: some View {
+        HStack(spacing: 12) {
+            Label("This chat is full.", systemImage: "checkmark.seal.fill")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+            Button("New Chat", action: onStartNewChat)
+                .font(.footnote.weight(.semibold))
+                .buttonStyle(.borderedProminent)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal)
@@ -317,7 +337,7 @@ struct ChatView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, Self.composerVerticalPadding)
             .background(Theme.assistantBubble, in: Capsule())
-            .disabled(engine.isAtCapacity)
+            .disabled(isInputDisabled)
 
             Button {
                 if engine.isResponding { cancel() } else { send() }
@@ -354,7 +374,7 @@ struct ChatView: View {
                 .foregroundStyle(isImageMode ? AnyShapeStyle(Theme.userBubble) : AnyShapeStyle(.secondary))
         }
         .frame(height: composerRowHeight)
-        .disabled(engine.isAtCapacity)
+        .disabled(isInputDisabled)
         .accessibilityLabel(isImageMode ? "Turn off image generation" : "Generate an image")
     }
 
@@ -401,8 +421,15 @@ struct ChatView: View {
     private var canSend: Bool {
         !draft.isBlank
             && !engine.isResponding
+            && !engine.isCompacting
             && engine.availabilityMessage == nil
-            && !engine.isAtCapacity
+            && engine.capacityState != .full
+    }
+
+    /// Whether the composer's input controls are disabled: a full chat takes no more input, and
+    /// input is briefly frozen while a compaction rebuilds the session (a send would race it).
+    private var isInputDisabled: Bool {
+        engine.capacityState == .full || engine.isCompacting
     }
 
     private let bottomAnchorID = "bottom-anchor"

@@ -19,6 +19,24 @@ struct TokenUsage: Equatable {
 
     /// True once the conversation has consumed its usable token budget and can take no more turns.
     var isAtCapacity: Bool { used >= limit }
+
+    /// Fraction of the budget at/after which the chat warns and offers compaction. Set below 1 so
+    /// compaction is offered while there's still headroom to summarize the live turns in one pass —
+    /// once the window is truly full the summarizer itself would overflow, so we don't offer it then.
+    static let warningFraction = 0.8
+
+    /// True in the warning band: near the budget but not yet full, so the chat still accepts input
+    /// while nudging the user to compact.
+    var isApproachingCapacity: Bool { fraction >= Self.warningFraction && !isAtCapacity }
+}
+
+/// How close a conversation is to the model's context budget, driving the composer and banner.
+/// `.approaching` warns and offers compaction while still accepting input; `.full` blocks input and
+/// offers only a fresh chat — by then the conversation is too large to summarize reliably.
+enum CapacityState {
+    case normal
+    case approaching
+    case full
 }
 
 /// A marker of the most recently finished model turn, so the UI can fire a completion haptic.
@@ -90,11 +108,16 @@ final class ChatEngine {
 
     private static let logger = Logger(subsystem: AppInfo.bundleID, category: "ChatEngine")
 
-    /// Whether the conversation can accept another turn. Prefers the real token budget; falls back
-    /// to the message-count cap when token counting is unavailable (pre-iOS 26.4 or a failed count).
-    var isAtCapacity: Bool {
-        if let tokenUsage { return tokenUsage.isAtCapacity }
-        return conversation?.isAtCapacity ?? false
+    /// The conversation's standing against the context budget. Prefers the real token budget; falls
+    /// back to the message-count cap when token counting is unavailable (pre-iOS 26.4 or a failed
+    /// count). `.approaching` still accepts input (and offers compaction); `.full` does not.
+    var capacityState: CapacityState {
+        if let tokenUsage {
+            if tokenUsage.isAtCapacity { return .full }
+            if tokenUsage.isApproachingCapacity { return .approaching }
+            return .normal
+        }
+        return conversation?.capacityState ?? .normal
     }
 
     private static let chatInstructionsText =
@@ -303,7 +326,9 @@ final class ChatEngine {
     /// of hitting a dead end at capacity. Manual only, driven by the capacity banner's Continue
     /// button. Runs as a tracked task so leaving the conversation cancels it, like a normal turn.
     func compact() {
-        guard !isResponding, !isCompacting, isAtCapacity else { return }
+        // Only from the warning band: `.full` is intentionally past the point of compaction (the
+        // summarizer would overflow the same window), and `.normal` has nothing worth condensing.
+        guard !isResponding, !isCompacting, capacityState == .approaching else { return }
         cancelActiveTurn()
         activeTurn = Task { [weak self] in await self?.performCompaction() }
     }
@@ -426,7 +451,7 @@ final class ChatEngine {
         // A full chat is closed to new turns — the UI reflects this, but guard defensively so a
         // late send (e.g. an in-flight submit) can't push past the token/message cap. A turn
         // cancelled before it ever ran (superseded in `submit`) must not touch the store at all.
-        guard !text.isEmpty, !isResponding, !isAtCapacity, !Task.isCancelled else { return }
+        guard !text.isEmpty, !isResponding, capacityState != .full, !Task.isCancelled else { return }
 
         let wasEmpty = !conversation.hasMessages
         let now = Date.now

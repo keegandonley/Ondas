@@ -31,6 +31,11 @@ final class Conversation {
     /// A proxy for the token budget — tune down if long messages approach the limit.
     static let messageLimit = 40
 
+    /// Message count at which the chat starts suggesting compaction — the message-count mirror of
+    /// `TokenUsage.warningFraction`, used only on the pre-iOS 26.4 fallback path (no token counting).
+    /// Kept below `messageLimit` so the nudge arrives with room to summarize, not at the wall.
+    static let compactionSuggestedCount = Int(Double(messageLimit) * TokenUsage.warningFraction)
+
     init(title: String = Conversation.defaultTitle, createdAt: Date = .now) {
         self.id = UUID()
         self.title = title
@@ -59,13 +64,16 @@ final class Conversation {
         !(messages ?? []).isEmpty
     }
 
-    /// True once the current segment has hit `messageLimit` and can no longer accept new turns.
-    /// Only the turns since the last compaction count (see `Compaction.capacityCount`): compaction
-    /// summarizes older turns into a divider and continues in place, so a compacted chat must not
-    /// stay stuck at capacity. Error notices are excluded too — they're kept out of the rehydrated
-    /// transcript, so they consume none of the context budget this cap proxies. On iOS 26.4+ the
-    /// real token budget (`ChatEngine.tokenUsage`) is the primary defense; this is the fallback.
-    var isAtCapacity: Bool {
-        Compaction.capacityCount(in: orderedMessages) >= Conversation.messageLimit
+    /// Capacity standing from the message-count cap — the fallback used only when token counting is
+    /// unavailable (pre-iOS 26.4 or a failed count); on iOS 26.4+ `ChatEngine.tokenUsage` is the
+    /// primary defense. Only the turns since the last compaction count (see `Compaction.capacityCount`):
+    /// compaction summarizes older turns into a divider and continues in place, so a compacted chat
+    /// must not stay stuck at capacity. Error notices are excluded too — they're kept out of the
+    /// rehydrated transcript, so they consume none of the context budget this cap proxies.
+    var capacityState: CapacityState {
+        let count = Compaction.capacityCount(in: orderedMessages)
+        if count >= Conversation.messageLimit { return .full }
+        if count >= Conversation.compactionSuggestedCount { return .approaching }
+        return .normal
     }
 }
