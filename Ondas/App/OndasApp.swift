@@ -7,6 +7,12 @@ struct OndasApp: App {
     /// with no account or sign-up.
     private let modelContainer = AppModelContainer.make()
 
+    #if targetEnvironment(macCatalyst)
+    // Starts/stops the macOS menu-bar agent alongside the app. Catalyst only — iPhone/iPad have
+    // no menu bar.
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    #endif
+
     init() {
         // Load the user's saved telemetry preference (off by default) into the shared service so any
         // model usage this session can be reported. Fire-and-forget: the actor updates itself.

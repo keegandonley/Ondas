@@ -120,6 +120,22 @@ final class ChatEngine {
         return conversation?.capacityState ?? .normal
     }
 
+    /// Whether a message with `draft` can be sent right now. Shared by the app's `ChatView` and the
+    /// menu-bar agent's `MenuBarChatView` so the send-gating rules live in one place.
+    func canSend(draft: String) -> Bool {
+        !draft.isBlank
+            && !isResponding
+            && !isCompacting
+            && availabilityMessage == nil
+            && capacityState != .full
+    }
+
+    /// Whether the composer's input controls should be disabled: a full chat takes no more input,
+    /// and input is frozen while a compaction rebuilds the session (a send would race it).
+    var isComposerDisabled: Bool {
+        capacityState == .full || isCompacting
+    }
+
     private static let chatInstructionsText =
         """
         You are Ondas, a helpful and friendly assistant that runs entirely on the user's

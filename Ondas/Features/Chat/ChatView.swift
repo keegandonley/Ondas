@@ -419,17 +419,11 @@ struct ChatView: View {
     }
 
     private var canSend: Bool {
-        !draft.isBlank
-            && !engine.isResponding
-            && !engine.isCompacting
-            && engine.availabilityMessage == nil
-            && engine.capacityState != .full
+        engine.canSend(draft: draft)
     }
 
-    /// Whether the composer's input controls are disabled: a full chat takes no more input, and
-    /// input is briefly frozen while a compaction rebuilds the session (a send would race it).
     private var isInputDisabled: Bool {
-        engine.capacityState == .full || engine.isCompacting
+        engine.isComposerDisabled
     }
 
     private let bottomAnchorID = "bottom-anchor"

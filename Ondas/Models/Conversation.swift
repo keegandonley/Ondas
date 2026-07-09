@@ -1,6 +1,36 @@
 import Foundation
 import SwiftData
 
+extension Conversation {
+    /// A one-line preview of the latest message for sidebar/list rows. Shared by the main
+    /// conversation list and the menu-bar quick-chat panel so both read identically.
+    var previewText: String {
+        guard let latest = latestMessage else {
+            return "No messages yet"
+        }
+        if latest.hasImage, latest.text.isEmpty {
+            return latest.role == .user ? "Image request" : "Generated image"
+        }
+        return latest.text
+    }
+
+    /// Returns an existing empty ("New Chat") thread to reuse, or inserts and returns a fresh one.
+    /// Centralizes the "don't accumulate empty CloudKit-synced rows on repeated New Chat taps"
+    /// policy shared by the main list and the quick-chat panel. Callers select the returned thread.
+    static func reuseEmptyOrCreate(
+        from conversations: [Conversation],
+        in context: ModelContext
+    ) -> Conversation {
+        if let empty = conversations.first(where: { !$0.hasMessages }) {
+            return empty
+        }
+        let conversation = Conversation()
+        context.insert(conversation)
+        context.saveOrLog()
+        return conversation
+    }
+}
+
 /// A single chat thread. The root aggregate that owns its messages.
 ///
 /// Every stored property has a default value and no property is `@Attribute(.unique)`,

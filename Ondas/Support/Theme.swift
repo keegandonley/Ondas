@@ -7,7 +7,14 @@ enum Theme {
     static let userBubble = Color.accentColor
 
     /// Fill for assistant message bubbles; a neutral surface that adapts to light/dark.
-    static let assistantBubble = Color(.secondarySystemBackground)
+    /// `os(macOS)` is the native menu-bar agent (Catalyst is `os(iOS)`, so it keeps the UIKit color).
+    static let assistantBubble: Color = {
+        #if os(macOS)
+        return Color(nsColor: .controlBackgroundColor)
+        #else
+        return Color(uiColor: .secondarySystemBackground)
+        #endif
+    }()
 
     /// Corner radius shared by message bubbles and generated-image cards.
     static let bubbleCornerRadius: CGFloat = 20

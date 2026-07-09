@@ -59,6 +59,18 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: true
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+    dependencies:
+      # Embed the macOS menu-bar agent as a login-item helper (Contents/Library/LoginItems), which
+      # is where SMAppService expects it. Catalyst-only — an iPhone/iPad app can't embed a macOS
+      # app. Not linked (separate process, launched via SMAppService), just copied + signed.
+      - target: OndasMenuBar
+        link: false
+        embed: true
+        codeSign: true
+        copy:
+          destination: wrapper
+          subpath: Contents/Library/LoginItems
+        destinationFilters: [macCatalyst]
     entitlements:
       path: Ondas/Resources/Ondas.entitlements
       properties:
@@ -70,11 +82,86 @@ targets:
           - iCloud.com.keegancodes.ondas
         com.apple.developer.icloud-services:
           - CloudKit
+        # Shared App Group so the macOS menu-bar agent (separate process) opens the same SwiftData
+        # store as the app. BOTH forms are declared: iPhone/iPad use the `group.` container, while
+        # the Mac (Catalyst app + agent) uses the team-scoped `$(TeamIdentifierPrefix)…` one —
+        # `AppInfo.appGroupID` picks per platform. On macOS the team-scoped form avoids the
+        # per-launch "access data from other apps" consent prompt that `group.` triggers; the
+        # `group.` entry is harmless there because the Mac code never touches that container.
+        com.apple.security.application-groups:
+          - group.com.keegancodes.ondas
+          - $(TeamIdentifierPrefix)com.keegancodes.ondas
+        # Shared keychain access group so the agent can read the telemetry bearer key the app
+        # stored in the Keychain. The system uses the first entry here as the default access group
+        # for reads/writes, so both targets sharing this one group share the item. Suffix must match
+        # on both targets; `$(AppIdentifierPrefix)` resolves to the team prefix at signing.
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)com.keegancodes.ondas.shared
         com.apple.developer.ubiquity-kvstore-identifier: "$(TeamIdentifierPrefix)com.keegancodes.ondas"
         # Sandboxed Mac Catalyst blocks CloudKit traffic without the network-client
         # entitlement; declared here so `xcodegen generate` never drops it.
         com.apple.security.app-sandbox: true
         com.apple.security.network.client: true
+
+  # Standalone macOS menu-bar agent (its own process). Owns the NSStatusItem + NSPopover and hosts
+  # the compact quick-chat. Compiles the SAME core sources as the app (source-shared, not a
+  # framework — the app is macabi, the agent is macos, so a shared binary isn't possible while the
+  # app still targets iPhone/iPad). Shares data with the app via the App Group store.
+  OndasMenuBar:
+    type: application
+    platform: macOS
+    deploymentTarget:
+      macOS: "26.4"
+    sources:
+      - path: OndasMenuBar
+      - path: Ondas/Models
+      - path: Ondas/App/AppModelContainer.swift
+      - path: Ondas/Services
+        # PhotoLibrarySaver is UIKit/Photos add-only (iOS); the popover doesn't save to Photos.
+        excludes:
+          - PhotoLibrarySaver.swift
+      - path: Ondas/Support/AppInfo.swift
+      - path: Ondas/Support/ContainerPreferences.swift
+      - path: Ondas/Support/StringExtensions.swift
+      - path: Ondas/Support/ModelContextExtensions.swift
+      - path: Ondas/Support/Theme.swift
+    info:
+      path: OndasMenuBar/Info.plist
+      properties:
+        CFBundleDisplayName: Ondas Menu Bar
+        # Agent: no Dock icon, no app menu — lives only in the menu bar.
+        LSUIElement: true
+        LSApplicationCategoryType: public.app-category.productivity
+        # URL scheme the app opens to launch the agent immediately (SMAppService only guarantees
+        # launch at login, not in the current session). A sandboxed Catalyst app can't use
+        # NSWorkspace, but it can open a URL, which LaunchServices routes to this handler.
+        CFBundleURLTypes:
+          - CFBundleURLName: com.keegancodes.ondas.MenuBar
+            CFBundleURLSchemes:
+              - ondas-menubar
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.keegancodes.ondas.MenuBar
+        SWIFT_VERSION: "6.0"
+        MACOSX_DEPLOYMENT_TARGET: "26.4"
+    entitlements:
+      path: OndasMenuBar/OndasMenuBar.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.network.client: true
+        com.apple.developer.icloud-container-identifiers:
+          - iCloud.com.keegancodes.ondas
+        com.apple.developer.icloud-services:
+          - CloudKit
+        # ONLY the team-scoped group (the agent shares the store + reads settings from it via
+        # ContainerPreferences). No `group.` entry: a native-macOS app is prompted with the "access
+        # data from other apps" consent for a `group.` App Group even if unused, whereas the
+        # team-scoped container is same-team and silent. (The app keeps `group.` for its iOS builds.)
+        com.apple.security.application-groups:
+          - $(TeamIdentifierPrefix)com.keegancodes.ondas
+        # Same shared keychain access group as the app so the agent can read the telemetry key.
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)com.keegancodes.ondas.shared
 
   OndasTests:
     type: bundle.unit-test

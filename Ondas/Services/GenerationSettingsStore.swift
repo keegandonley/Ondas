@@ -39,13 +39,16 @@ enum ResponseStyle: String, CaseIterable, Identifiable {
 /// `ChatEngine` on every turn (a cheap `UserDefaults` lookup) rather than cached, so a change in
 /// Settings takes effect on the very next message without any cross-object update plumbing.
 struct GenerationSettingsStore {
-    private let defaults: UserDefaults
+    private let defaults: KeyValueStore
 
     private enum Keys {
         static let responseStyle = "generation.responseStyle"
     }
 
-    init(defaults: UserDefaults = .standard) {
+    // The shared-container store so the menu-bar agent reads the same response-style the user picked
+    // in the app's Settings (process-local `UserDefaults.standard` would be invisible across the
+    // process boundary). See `ContainerPreferences` for why this isn't a `UserDefaults` suite.
+    init(defaults: KeyValueStore = ContainerPreferences.shared) {
         self.defaults = defaults
     }
 

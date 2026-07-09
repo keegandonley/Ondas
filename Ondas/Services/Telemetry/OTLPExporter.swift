@@ -115,8 +115,9 @@ actor OTLPExporter {
     }
 
     /// POSTs an encoded OTLP payload to the collector's traces route, reporting whether it was
-    /// accepted (2xx). Failures (transport or status) are logged at debug and reported as `false`;
-    /// the callers decide whether that means retry-later (`flushOnce`) or a failed test (`deliver`).
+    /// accepted (2xx). The user enters the base OTLP URL and this appends the `v1/traces` signal
+    /// path. Failures (transport or status) are logged at debug and reported as `false`; the callers
+    /// decide whether that means retry-later (`flushOnce`) or a failed test (`deliver`).
     private func post(_ body: Data, endpoint: URL, apiKey: String) async -> Bool {
         var request = URLRequest(url: endpoint.appendingPathComponent("v1/traces"))
         request.httpMethod = "POST"

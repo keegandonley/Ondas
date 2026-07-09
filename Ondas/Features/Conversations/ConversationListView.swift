@@ -139,14 +139,7 @@ struct ConversationListView: View {
     private func startNewConversation() {
         // Reuse an existing empty thread rather than accumulating "New Chat" rows that would
         // sync to CloudKit; repeated taps (or the capacity banner) then converge on one draft.
-        if let empty = conversations.first(where: { !$0.hasMessages }) {
-            selectedConversationID = empty.id
-            return
-        }
-        let conversation = Conversation()
-        modelContext.insert(conversation)
-        modelContext.saveOrLog()
-        selectedConversationID = conversation.id
+        selectedConversationID = Conversation.reuseEmptyOrCreate(from: conversations, in: modelContext).id
     }
 
     private func deleteConversations(at offsets: IndexSet) {
@@ -197,23 +190,13 @@ private struct ConversationRow: View {
                 Text(conversation.title)
                     .font(.headline)
                     .lineLimit(1)
-                Text(previewText)
+                Text(conversation.previewText)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
         }
         .padding(.vertical, 2)
-    }
-
-    private var previewText: String {
-        guard let latest = conversation.latestMessage else {
-            return "No messages yet"
-        }
-        if latest.hasImage, latest.text.isEmpty {
-            return latest.role == .user ? "Image request" : "Generated image"
-        }
-        return latest.text
     }
 }
 

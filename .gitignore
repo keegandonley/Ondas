@@ -12,6 +12,7 @@ xcuserdata/
 # XcodeGen generates the project + Info.plist; keep them out of source control
 Ondas.xcodeproj/
 Ondas/Resources/Info.plist
+OndasMenuBar/Info.plist
 
 # Swift Package Manager
 .build/

@@ -110,7 +110,7 @@ struct KeychainSecretStore: SecretStore {
 /// default. `@MainActor` because it is driven from the settings UI and app launch.
 @MainActor
 struct TelemetrySettingsStore {
-    private let defaults: UserDefaults
+    private let defaults: KeyValueStore
     private let secrets: SecretStore
 
     private enum Keys {
@@ -120,8 +120,12 @@ struct TelemetrySettingsStore {
         static let apiKeyAccount = "telemetry.apiKey"
     }
 
+    // `.shared` (App Group) so the app and the menu-bar agent read the same telemetry preference
+    // (endpoint + on/off). The bearer key lives in the Keychain under the shared `keychain-access-
+    // groups` group (see the entitlements), so the agent reads it too — agent-originated turns
+    // report telemetry just like the app's.
     init(
-        defaults: UserDefaults = .standard,
+        defaults: KeyValueStore = ContainerPreferences.shared,
         secrets: SecretStore = KeychainSecretStore(service: AppInfo.bundleID)
     ) {
         self.defaults = defaults

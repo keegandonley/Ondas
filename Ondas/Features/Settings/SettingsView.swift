@@ -72,7 +72,7 @@ struct SettingsView: View {
                     )
                 }
 
-                Section("Endpoint") {
+                Section {
                     TextField("OTLP base URL", text: $endpoint)
                         .textContentType(.URL)
                         .keyboardType(.URL)
@@ -81,6 +81,10 @@ struct SettingsView: View {
                     SecureField("Bearer key (otlp_…)", text: $apiKey)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                } header: {
+                    Text("Endpoint")
+                } footer: {
+                    Text("The base OTLP/HTTP URL; Ondas appends /v1/traces (JSON traces). e.g. https://stats.keegan.codes/api/otlp")
                 }
 
                 Section {
@@ -117,6 +121,11 @@ struct SettingsView: View {
                 }
             }
             .onAppear(perform: load)
+            // A prior test result is only valid for the endpoint/key it was run against. Clear it
+            // the moment either changes, so an edited (e.g. now-wrong) endpoint doesn't keep showing
+            // the previous run's ✓.
+            .onChange(of: endpoint) { testResult = nil }
+            .onChange(of: apiKey) { testResult = nil }
             // Save on *any* dismissal — Done and an interactive swipe-down behave the same, so
             // edits (e.g. a freshly pasted API key) are never silently discarded.
             .onDisappear(perform: save)
