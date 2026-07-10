@@ -74,6 +74,12 @@ struct ChatView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task(id: conversation.id) {
             await engine.configure(conversation: conversation, context: modelContext)
+            #if targetEnvironment(macCatalyst)
+            // Land the cursor in the composer on open and on every conversation switch, so the Mac
+            // user can start typing without first clicking the field. Set after `configure` so the
+            // composer isn't disabled by a transient state as focus lands.
+            isComposerFocused = true
+            #endif
         }
         .onDisappear {
             // Leaving the conversation cancels any in-flight reply so it stops streaming into a
@@ -326,12 +332,7 @@ struct ChatView: View {
                 if isImageMode {
                     imageModeChip
                 }
-                TextField(isImageMode ? "Describe the image…" : "Message", text: $draft, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .lineLimit(1...6)
-                    .focused($isComposerFocused)
-                    .onSubmit(send)
-                    .onChange(of: draft) { enterImageModeIfCommanded() }
+                composerField
             }
             .frame(minHeight: composerFieldHeight)
             .padding(.horizontal, 14)
@@ -358,6 +359,28 @@ struct ChatView: View {
         .padding(.vertical, 10)
         .background(.bar)
         .animation(.snappy(duration: 0.2), value: isImageMode)
+    }
+
+    /// The message input. On the Mac a plain Return sends and ⌘/⇧Return inserts a newline, matching
+    /// how desktop chat apps behave; iPhone/iPad keep the platform default (`onSubmit`, so the
+    /// on-screen keyboard's Return sends and multiline growth comes from the field itself).
+    private var composerField: some View {
+        TextField(isImageMode ? "Describe the image…" : "Message", text: $draft, axis: .vertical)
+            .textFieldStyle(.plain)
+            .lineLimit(1...6)
+            .focused($isComposerFocused)
+            #if targetEnvironment(macCatalyst)
+            // Return sends; ⌘Return or ⇧Return falls through (`.ignored`) so the multiline field
+            // inserts a newline itself. Empty/whitespace drafts no-op via `send`'s `canSend` guard.
+            .onKeyPress(.return, phases: .down) { keyPress in
+                guard keyPress.modifiers.isDisjoint(with: [.command, .shift]) else { return .ignored }
+                send()
+                return .handled
+            }
+            #else
+            .onSubmit(send)
+            #endif
+            .onChange(of: draft) { enterImageModeIfCommanded() }
     }
 
     /// A visible affordance for image generation: tapping it toggles `/image` mode without the user
@@ -436,6 +459,11 @@ struct ChatView: View {
         isImageMode = false
         sentCount += 1
         engine.submit(outgoing, asImage: asImage)
+        #if targetEnvironment(macCatalyst)
+        // Sending via Return resigns first responder on the Mac; put focus straight back so the
+        // next message can be typed without re-clicking the field.
+        isComposerFocused = true
+        #endif
     }
 
     /// Stops the in-flight reply. The engine cancels the streaming turn, which keeps whatever text
