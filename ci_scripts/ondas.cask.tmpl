@@ -1,0 +1,20 @@
+cask "ondas" do
+  version "@@VERSION@@"
+  sha256 "@@SHA256@@"
+
+  url "https://github.com/keegandonley/Ondas/releases/download/v#{version}/Ondas-#{version}.zip"
+  name "Ondas"
+  desc "On-device AI chat with a macOS menu-bar quick-chat"
+  homepage "https://github.com/keegandonley/Ondas"
+
+  # The app is built against the macOS 26 (Tahoe) SDK and uses FoundationModels / on-device APIs.
+  depends_on macos: ">= :tahoe"
+
+  app "Ondas.app"
+
+  zap trash: [
+    "~/Library/Containers/com.keegancodes.ondas",
+    "~/Library/Containers/com.keegancodes.ondas.MenuBar",
+    "~/Library/Application Scripts/com.keegancodes.ondas",
+  ]
+end

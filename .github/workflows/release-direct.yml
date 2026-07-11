@@ -1,0 +1,215 @@
+# Builds the direct-distribution (non-Mac-App-Store) macOS build WITH the menu-bar item, notarizes
+# it, publishes a GitHub Release, and bumps the Homebrew cask in keegandonley/homebrew-tap.
+#
+# Trigger: push a tag like `v1.2.0`. MARKETING_VERSION comes from the tag; CURRENT_PROJECT_VERSION
+# from the run number. The App Store / TestFlight build stays on Xcode Cloud (the clean `Release`
+# config); this workflow only ever builds the `Ondas Direct` scheme / `Distribute` config.
+#
+# Required repository secrets:
+#   DEVELOPER_ID_CERT_P12_BASE64  base64 of the "Developer ID Application" cert + key, exported as .p12
+#   DEVELOPER_ID_CERT_PASSWORD    password protecting that .p12
+#   KEYCHAIN_PASSWORD             any string; unlocks the throwaway CI keychain
+#   ASC_API_KEY_P8_BASE64         base64 of an App Store Connect API key (.p8) — used for BOTH
+#                                 -allowProvisioningUpdates (Developer ID profiles) and notarytool
+#   ASC_API_KEY_ID               the key's Key ID
+#   ASC_API_ISSUER_ID            the key's Issuer ID
+#   HOMEBREW_TAP_TOKEN           PAT (contents:write) for keegandonley/homebrew-tap
+name: Release (Direct)
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # create GitHub Releases in this repo
+
+concurrency:
+  group: release-direct-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # macOS 26 image — provides the Xcode 26 toolchain with the iOS/macOS 26.4 SDK the app needs.
+    runs-on: macos-26
+    env:
+      APP_NAME: Ondas
+      SCHEME: Ondas Direct
+      CONFIGURATION: Distribute
+      TEAM_ID: "3D997JL57S"
+      TAP_REPO: keegandonley/homebrew-tap
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        # Pinned release binary, matching ci_scripts/ci_post_clone.sh (brew is unreliable in CI).
+        run: |
+          XCODEGEN_VERSION=2.45.4
+          curl -fsSL -o /tmp/xcodegen.zip \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          unzip -q -o /tmp/xcodegen.zip -d /tmp/xcodegen-dist
+          echo "/tmp/xcodegen-dist/xcodegen/bin" >> "$GITHUB_PATH"
+
+      - name: Generate Xcode project
+        run: xcodegen generate --spec project.yml
+
+      - name: Derive version
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Releasing Ondas $VERSION (build ${GITHUB_RUN_NUMBER})"
+
+      - name: Import Developer ID certificate
+        env:
+          CERT_P12_BASE64: ${{ secrets.DEVELOPER_ID_CERT_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          CERT_PATH="$RUNNER_TEMP/developer_id.p12"
+          echo "$CERT_P12_BASE64" | base64 --decode > "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          # Allow codesign/productbuild to use the key without an interactive prompt.
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          # Make the CI keychain searchable alongside the login keychain.
+          security list-keychain -d user -s "$KEYCHAIN_PATH" login.keychain-db
+          rm -f "$CERT_PATH"
+
+      - name: Write App Store Connect API key
+        env:
+          ASC_KEY_P8_BASE64: ${{ secrets.ASC_API_KEY_P8_BASE64 }}
+        run: |
+          API_KEY_PATH="$RUNNER_TEMP/asc_api_key.p8"
+          echo "$ASC_KEY_P8_BASE64" | base64 --decode > "$API_KEY_PATH"
+          echo "API_KEY_PATH=$API_KEY_PATH" >> "$GITHUB_ENV"
+
+      - name: Archive (Mac Catalyst)
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
+          # Pass tag-derived values through env (never interpolate ${{ }} into a run script directly).
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          xcodebuild archive \
+            -project "${APP_NAME}.xcodeproj" \
+            -scheme "$SCHEME" \
+            -configuration "$CONFIGURATION" \
+            -destination 'generic/platform=macOS,variant=Mac Catalyst' \
+            -archivePath "$RUNNER_TEMP/${APP_NAME}.xcarchive" \
+            -authenticationKeyPath "$API_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            -allowProvisioningUpdates \
+            CODE_SIGN_STYLE=Automatic \
+            DEVELOPMENT_TEAM="$TEAM_ID" \
+            ENABLE_HARDENED_RUNTIME=YES \
+            MARKETING_VERSION="$VERSION" \
+            CURRENT_PROJECT_VERSION="${GITHUB_RUN_NUMBER}"
+
+      - name: Export (Developer ID)
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
+        run: |
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/${APP_NAME}.xcarchive" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -exportOptionsPlist ci_scripts/exportOptions-developerid.plist \
+            -authenticationKeyPath "$API_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            -allowProvisioningUpdates
+
+      - name: Notarize and staple
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
+        run: |
+          APP_PATH="$RUNNER_TEMP/export/${APP_NAME}.app"
+          # Cheap pre-flight: catch a broken signature (incl. the script-embedded agent) here, with a
+          # clear diagnostic, instead of after a multi-minute notarization round-trip.
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          NOTARIZE_ZIP="$RUNNER_TEMP/${APP_NAME}-notarize.zip"
+          # notarytool needs a container (zip); it notarizes the .app inside, then we staple the app.
+          ditto -c -k --keepParent "$APP_PATH" "$NOTARIZE_ZIP"
+          xcrun notarytool submit "$NOTARIZE_ZIP" \
+            --key "$API_KEY_PATH" \
+            --key-id "$ASC_KEY_ID" \
+            --issuer "$ASC_ISSUER_ID" \
+            --wait
+          xcrun stapler staple "$APP_PATH"
+          # Fail the build if Gatekeeper would reject the stapled app.
+          spctl --assess --type execute --verbose "$APP_PATH"
+
+      - name: Package release asset
+        id: package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          APP_PATH="$RUNNER_TEMP/export/${APP_NAME}.app"
+          ASSET="${APP_NAME}-${VERSION}.zip"
+          DIST="$RUNNER_TEMP/${ASSET}"
+          # Re-zip AFTER stapling so the distributed app carries its notarization ticket offline.
+          ditto -c -k --keepParent "$APP_PATH" "$DIST"
+          SHA=$(shasum -a 256 "$DIST" | awk '{print $1}')
+          echo "path=$DIST" >> "$GITHUB_OUTPUT"
+          echo "asset=$ASSET" >> "$GITHUB_OUTPUT"
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          ASSET_PATH: ${{ steps.package.outputs.path }}
+          ASSET_NAME: ${{ steps.package.outputs.asset }}
+        run: |
+          # Idempotent: on a re-run where the release already exists, update its asset instead of
+          # hard-failing (`gh release create` errors if the tag already has a release).
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${ASSET_PATH}#${ASSET_NAME}" \
+              --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${ASSET_PATH}#${ASSET_NAME}" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Ondas ${VERSION}" \
+              --generate-notes
+          fi
+
+      - name: Update Homebrew cask
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          SHA: ${{ steps.package.outputs.sha256 }}
+        run: |
+          TAP_DIR="$RUNNER_TEMP/tap"
+          # Full (not shallow) clone so `git pull --rebase` below works if we lose a push race.
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/${TAP_REPO}.git" "$TAP_DIR"
+          cd "$TAP_DIR" || exit 1
+          mkdir -p Casks
+          sed -e "s/@@VERSION@@/${VERSION}/" -e "s/@@SHA256@@/${SHA}/" \
+            "$GITHUB_WORKSPACE/ci_scripts/ondas.cask.tmpl" > Casks/ondas.rb
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/ondas.rb
+          # No-op safely if the tag is re-run against an unchanged cask.
+          git diff --cached --quiet && { echo "Cask already up to date"; exit 0; }
+          git commit -m "ondas ${VERSION}"
+          # Retry against a concurrent release pushing the same tap repo (per-tag concurrency doesn't
+          # serialize different tags): rebase onto the winner and push again.
+          for attempt in 1 2 3 4 5; do
+            if git push; then exit 0; fi
+            echo "cask push rejected (attempt ${attempt}); rebasing onto latest tap HEAD"
+            git pull --rebase
+          done
+          echo "error: failed to push cask update after 5 attempts" >&2
+          exit 1
