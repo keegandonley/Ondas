@@ -20,12 +20,25 @@ fi
 
 AGENT="${BUILT_PRODUCTS_DIR}/OndasMenuBar.app"
 if [ ! -d "${AGENT}" ]; then
-    AGENT="$(find "${BUILD_DIR}" -maxdepth 4 -name OndasMenuBar.app -type d 2>/dev/null | head -1)"
+    # In an ARCHIVE build the agent has SKIP_INSTALL=YES, so Xcode drops it under
+    # ArchiveIntermediates/<scheme>/IntermediateBuildFilesPath/UninstalledProducts/macosx/ — a
+    # sibling of BUILD_DIR (BuildProductsPath), NOT under it. Search the archive intermediates root
+    # (OBJROOT) and BUILD_DIR's parent, in addition to the plain-build locations, so both build and
+    # archive resolve the agent. Ordered most-specific first.
+    for root in "${OBJROOT:-}" "${BUILD_DIR%/*}" "${SYMROOT:-}" "${BUILD_DIR:-}"; do
+        [ -n "${root}" ] && [ -d "${root}" ] || continue
+        found="$(find "${root}" -name OndasMenuBar.app -type d 2>/dev/null | head -1)"
+        if [ -n "${found}" ]; then
+            AGENT="${found}"
+            break
+        fi
+    done
 fi
 if [ -z "${AGENT}" ] || [ ! -d "${AGENT}" ]; then
     echo "error: OndasMenuBar.app not found to embed" >&2
     exit 1
 fi
+echo "note: embedding agent from ${AGENT}"
 
 DEST="${TARGET_BUILD_DIR}/${CONTENTS_FOLDER_PATH}/Library/LoginItems"
 mkdir -p "${DEST}"
