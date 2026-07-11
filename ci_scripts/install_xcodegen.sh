@@ -19,7 +19,10 @@ if [ "$ACTUAL_SHA256" != "$XCODEGEN_SHA256" ]; then
     exit 1
 fi
 
-unzip -tq "$ARCHIVE"
+# Integrity-test the archive. `-tq` still prints a "No errors detected…" summary to stdout;
+# keep this script's stdout limited to the final bin path (callers capture it into PATH), so
+# silence it with `-qq` and send any remaining output to stderr.
+unzip -tqq "$ARCHIVE" >&2
 unzip -q -o "$ARCHIVE" -d "$INSTALL_ROOT"
 
 XCODEGEN_BIN_DIR="$INSTALL_ROOT/xcodegen/bin"
