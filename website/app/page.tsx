@@ -66,8 +66,8 @@ export default function Home() {
               Chat With <span className="grad">Apple Intelligence</span>
             </h1>
             <p className="lead">
-              Ondas is a simple app that provides a chat interface with the
-              on-device Apple Intelligence model.
+              Ondas is a simple chat app for the on-device Apple Intelligence
+              model on your Mac.
             </p>
             <div className="cta-row">
               <a className="btn" href="#download">
@@ -190,7 +190,7 @@ export default function Home() {
             <img className="app-icon" src="/icon.png" alt="Ondas app icon" />
             <h2>Get Ondas for Mac</h2>
             <p>
-              Install with Homebrew and start a private conversation in seconds.
+              Install with Homebrew and start a private conversation.
             </p>
             <div className="install">
               <code id="install-cmd">{INSTALL_COMMAND}</code>
