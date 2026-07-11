@@ -42,9 +42,9 @@ final class CloudKitSyncMonitor {
             // `NSPersistentCloudKitContainer.Event` itself, which isn't `Sendable`.
             let type = Self.label(for: event.type)
             let succeeded = event.succeeded
-            let errorDescription = event.error.map(Self.describe)
+            let errorCode = event.error.map(Self.code)
             Task { @MainActor [weak self] in
-                self?.handle(type: type, succeeded: succeeded, errorDescription: errorDescription)
+                self?.handle(type: type, succeeded: succeeded, errorCode: errorCode)
             }
         }
     }
@@ -62,20 +62,11 @@ final class CloudKitSyncMonitor {
         }
     }
 
-    /// `error.localizedDescription` alone is close to useless for a `CKError.Code.partialFailure`
-    /// (code 2) — it's a *container* error, and the actual per-record reason lives in
-    /// `CKError.partialErrorsByItemID`. Unwrap it so the real cause (e.g. a specific record's
-    /// constraint violation or quota error) shows up instead of the generic top-level message.
-    private nonisolated static func describe(_ error: Error) -> String {
-        guard let ckError = error as? CKError,
-              let partialErrors = ckError.partialErrorsByItemID,
-              !partialErrors.isEmpty
-        else {
-            return (error as NSError).localizedDescription
-        }
-        // Multiple records commonly fail for the same underlying reason; de-duplicate before joining.
-        let reasons = Set(partialErrors.values.map { ($0 as NSError).localizedDescription })
-        return "partial failure — " + reasons.sorted().joined(separator: "; ")
+    /// A stable diagnostic identifier that avoids surfacing CloudKit's localized descriptions or
+    /// partial per-record errors, which may contain user-derived details.
+    private nonisolated static func code(_ error: Error) -> String {
+        let nsError = error as NSError
+        return "\(nsError.domain) (\(nsError.code))"
     }
 
     /// `succeeded` and `error` are independent fields on `NSPersistentCloudKitContainerEvent` — a
@@ -83,11 +74,11 @@ final class CloudKitSyncMonitor {
     /// end a sync with `succeeded == false` and no error object). Branch on `succeeded` rather than
     /// on error-presence so that case is still reported as a failure instead of silently reading as
     /// success.
-    private func handle(type: String, succeeded: Bool, errorDescription: String?) {
+    private func handle(type: String, succeeded: Bool, errorCode: String?) {
         guard succeeded else {
-            let reason = errorDescription ?? "no error details provided"
-            Self.logger.error("CloudKit \(type, privacy: .public) failed: \(reason, privacy: .public)")
-            status = "Sync error (\(type)): \(reason)"
+            let code = errorCode ?? "unknown"
+            Self.logger.error("CloudKit \(type, privacy: .public) failed (\(code, privacy: .public))")
+            status = "Sync error (\(type), code \(code)). Check iCloud and try again."
             return
         }
         Self.logger.info("CloudKit \(type, privacy: .public) succeeded")

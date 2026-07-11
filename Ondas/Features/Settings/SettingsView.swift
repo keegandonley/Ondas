@@ -33,6 +33,10 @@ struct SettingsView: View {
         )
     }
 
+    private var hasInvalidEndpoint: Bool {
+        !endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && draftConfig.endpoint == nil
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -84,7 +88,11 @@ struct SettingsView: View {
                 } header: {
                     Text("Endpoint")
                 } footer: {
-                    Text("The base OTLP/HTTP URL; Ondas appends /v1/traces (JSON traces). e.g. https://stats.keegan.codes/api/otlp")
+                    if hasInvalidEndpoint {
+                        Text("Use a valid HTTPS base URL. Ondas appends /v1/traces (JSON traces).")
+                    } else {
+                        Text("Use an HTTPS base OTLP URL; Ondas appends /v1/traces (JSON traces). e.g. https://stats.keegan.codes/api/otlp")
+                    }
                 }
 
                 Section {

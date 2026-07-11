@@ -65,6 +65,34 @@ struct TelemetryTests {
         #expect(!blank.isDeliverable)
     }
 
+    @Test func configRejectsInvalidOrInsecureTelemetryEndpoints() {
+        let insecure = TelemetryConfig(
+            isEnabled: true,
+            sendTranscripts: false,
+            endpointField: "http://example.com/api/otlp",
+            apiKeyField: "otlp_key"
+        )
+        #expect(insecure.endpoint == nil)
+        #expect(!insecure.isDeliverable)
+
+        let malformed = TelemetryConfig(
+            isEnabled: true,
+            sendTranscripts: false,
+            endpointField: "not a URL",
+            apiKeyField: "otlp_key"
+        )
+        #expect(malformed.endpoint == nil)
+        #expect(!malformed.isDeliverable)
+
+        let directInsecure = TelemetryConfig(
+            isEnabled: true,
+            sendTranscripts: false,
+            endpoint: URL(string: "http://example.com/api/otlp"),
+            apiKey: "otlp_key"
+        )
+        #expect(!directInsecure.isDeliverable)
+    }
+
     // MARK: Wire helpers
 
     @Test func traceIdIsDeterministic32HexCharsFromConversationUUID() {

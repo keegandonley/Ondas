@@ -4,8 +4,8 @@ import Security
 
 /// An immutable snapshot of the user's telemetry preferences, safe to hand to the telemetry actor.
 ///
-/// Telemetry is opt-in and off by default: this app is otherwise fully on-device, so nothing about a
-/// conversation leaves the device unless the user turns this on and points it at an endpoint.
+/// Telemetry is opt-in and off by default. When enabled, it sends usage data only to the endpoint
+/// chosen by the user; CloudKit syncing is configured separately by the app.
 struct TelemetryConfig: Sendable, Equatable {
     var isEnabled: Bool
     var sendTranscripts: Bool
@@ -14,7 +14,14 @@ struct TelemetryConfig: Sendable, Equatable {
 
     /// Whether a span can actually be delivered — enabled, with a destination and a key.
     var isDeliverable: Bool {
-        isEnabled && endpoint != nil && !(apiKey ?? "").isEmpty
+        isEnabled && Self.isSecureEndpoint(endpoint) && !(apiKey ?? "").isEmpty
+    }
+
+    /// Telemetry carries a bearer credential and can optionally carry transcript text, so delivery is
+    /// intentionally limited to well-formed HTTPS endpoints.
+    static func isSecureEndpoint(_ endpoint: URL?) -> Bool {
+        guard let endpoint, endpoint.scheme?.lowercased() == "https" else { return false }
+        return !(endpoint.host ?? "").isEmpty
     }
 
     static let disabled = TelemetryConfig(
@@ -34,10 +41,11 @@ extension TelemetryConfig {
     init(isEnabled: Bool, sendTranscripts: Bool, endpointField: String, apiKeyField: String) {
         let trimmedEndpoint = endpointField.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedKey = apiKeyField.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parsedEndpoint = trimmedEndpoint.isEmpty ? nil : URL(string: trimmedEndpoint)
         self.init(
             isEnabled: isEnabled,
             sendTranscripts: sendTranscripts,
-            endpoint: trimmedEndpoint.isEmpty ? nil : URL(string: trimmedEndpoint),
+            endpoint: Self.isSecureEndpoint(parsedEndpoint) ? parsedEndpoint : nil,
             apiKey: trimmedKey.isEmpty ? nil : trimmedKey
         )
     }

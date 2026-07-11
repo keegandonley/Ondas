@@ -26,3 +26,30 @@ OndasMenuBar/Info.plist
 *.p12
 *.p8
 .appstoreconnect/
+
+# Per-developer signing and service identities. The tracked base config uses safe
+# example values; this optional override contains the real Apple team and IDs.
+Config/Identity.local.xcconfig
+
+# Local editor and AI-assistant settings
+.claude/settings.local.json
+.codex/settings.local.json
+.vscode/settings.local.json
+
+# Environment files and private signing material
+.env
+.env.*
+!.env.example
+.envrc
+*.key
+*.pem
+*.cer
+*.crt
+*.der
+*.keychain
+*.keychain-db
+*.provisionprofile
+*.secret
+*.secrets
+Secrets.plist
+Config/Secrets.xcconfig

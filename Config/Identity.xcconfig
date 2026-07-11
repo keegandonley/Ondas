@@ -1,0 +1,27 @@
+// Safe identity defaults for local simulator builds and public forks.
+//
+// Copy Identity.local.xcconfig.example to Identity.local.xcconfig and replace the
+// values there before signing for a device or enabling CloudKit. The local file is
+// optional and intentionally ignored by Git.
+
+// Apple Developer team that owns the signing credentials. Leave empty for an
+// unsigned simulator build.
+ONDAS_DEVELOPMENT_TEAM =
+
+// Keep the default in a namespace no fork should ship. All related identifiers
+// below derive from this value, but each can be overridden in the local file.
+ONDAS_MAIN_APP_BUNDLE_IDENTIFIER = com.example.ondas
+ONDAS_MENU_BAR_URL_SCHEME = ondas-menubar
+
+DEVELOPMENT_TEAM = $(ONDAS_DEVELOPMENT_TEAM)
+ONDAS_MENU_BAR_AGENT_BUNDLE_IDENTIFIER = $(ONDAS_MAIN_APP_BUNDLE_IDENTIFIER).MenuBar
+ONDAS_TEST_BUNDLE_IDENTIFIER = $(ONDAS_MAIN_APP_BUNDLE_IDENTIFIER).tests
+ONDAS_ICLOUD_CONTAINER_IDENTIFIER = iCloud.$(ONDAS_MAIN_APP_BUNDLE_IDENTIFIER)
+ONDAS_IOS_APP_GROUP_IDENTIFIER = group.$(ONDAS_MAIN_APP_BUNDLE_IDENTIFIER)
+ONDAS_MAC_APP_GROUP_IDENTIFIER = $(TeamIdentifierPrefix)$(ONDAS_MAIN_APP_BUNDLE_IDENTIFIER)
+ONDAS_UBIQUITY_KVSTORE_IDENTIFIER = $(TeamIdentifierPrefix)$(ONDAS_MAIN_APP_BUNDLE_IDENTIFIER)
+ONDAS_KEYCHAIN_ACCESS_GROUP = $(AppIdentifierPrefix)$(ONDAS_MAIN_APP_BUNDLE_IDENTIFIER).shared
+
+// A local file can override the team, base bundle id, URL scheme, or any derived
+// identifier for projects whose Apple capabilities use a different naming scheme.
+#include? "Identity.local.xcconfig"

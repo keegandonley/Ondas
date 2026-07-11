@@ -131,7 +131,9 @@ actor OTLPExporter {
             }
             return true
         } catch {
-            Self.logger.debug("Telemetry POST failed: \(error, privacy: .public)")
+            // Transport errors can include the user-supplied endpoint. The Settings screen already
+            // reports delivery failure, so keep diagnostics free of connection details.
+            Self.logger.debug("Telemetry POST failed")
             return false
         }
     }

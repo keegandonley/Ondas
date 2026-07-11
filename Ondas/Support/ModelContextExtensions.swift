@@ -12,7 +12,9 @@ extension ModelContext {
         do {
             try save()
         } catch {
-            Self.logger.error("Failed to save model context: \(error, privacy: .public)")
+            // Persistence errors can include user-derived store details. Keep the public diagnostic
+            // to the operation itself; CloudKit sync health is exposed separately in Settings.
+            Self.logger.error("Failed to save model context")
         }
     }
 }

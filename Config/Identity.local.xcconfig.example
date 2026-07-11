@@ -1,0 +1,7 @@
+// Copy this file to Identity.local.xcconfig, then set values for your Apple Developer account.
+// The local file is ignored by Git and overrides Config/Identity.xcconfig.
+
+ONDAS_DEVELOPMENT_TEAM = YOUR_TEAM_ID
+ONDAS_MAIN_APP_BUNDLE_IDENTIFIER = com.yourcompany.ondas
+// Use a unique reverse-DNS-style URL scheme if this helper can coexist with another fork.
+ONDAS_MENU_BAR_URL_SCHEME = com.yourcompany.ondas-menubar

@@ -13,6 +13,8 @@
 #                                 -allowProvisioningUpdates (Developer ID profiles) and notarytool
 #   ASC_API_KEY_ID               the key's Key ID
 #   ASC_API_ISSUER_ID            the key's Issuer ID
+#   DEVELOPER_ID_PROFILE_APP_BASE64    base64 of the app's Developer ID provisioning profile
+#   DEVELOPER_ID_PROFILE_AGENT_BASE64  base64 of the menu-bar agent's Developer ID profile
 #   HOMEBREW_TAP_TOKEN           PAT (contents:write) for keegandonley/homebrew-tap
 name: Release (Direct)
 
@@ -32,39 +34,62 @@ jobs:
   release:
     # macOS 26 image — provides the Xcode 26 toolchain with the iOS/macOS 26.4 SDK the app needs.
     runs-on: macos-26
+    timeout-minutes: 90
     env:
       APP_NAME: Ondas
       SCHEME: Ondas Direct
       CONFIGURATION: Distribute
-      TEAM_ID: "3D997JL57S"
-      TAP_REPO: keegandonley/homebrew-tap
+      # Repository variables let a fork opt into its own signing and cask identities while keeping
+      # the current release channel working until those variables are configured.
+      TEAM_ID: ${{ vars.ONDAS_DEVELOPMENT_TEAM || '3D997JL57S' }}
+      MAIN_APP_BUNDLE_IDENTIFIER: ${{ vars.ONDAS_MAIN_APP_BUNDLE_IDENTIFIER || 'com.keegancodes.ondas' }}
+      MENU_BAR_URL_SCHEME: ${{ vars.ONDAS_MENU_BAR_URL_SCHEME || 'ondas-menubar' }}
+      TAP_REPO: ${{ vars.ONDAS_HOMEBREW_TAP_REPOSITORY || 'keegandonley/homebrew-tap' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        # v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          # The release token is only needed by the explicit `gh release` command below.
+          persist-credentials: false
 
       - name: Select Xcode
         run: |
           sudo xcode-select -s /Applications/Xcode.app
           xcodebuild -version
 
-      - name: Install XcodeGen
-        # Pinned release binary, matching ci_scripts/ci_post_clone.sh (brew is unreliable in CI).
+      - name: Install verified XcodeGen
         run: |
-          XCODEGEN_VERSION=2.45.4
-          curl -fsSL -o /tmp/xcodegen.zip \
-            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
-          unzip -q -o /tmp/xcodegen.zip -d /tmp/xcodegen-dist
-          echo "/tmp/xcodegen-dist/xcodegen/bin" >> "$GITHUB_PATH"
+          XCODEGEN_BIN_DIR="$(sh ci_scripts/install_xcodegen.sh "$RUNNER_TEMP/xcodegen-dist")"
+          echo "$XCODEGEN_BIN_DIR" >> "$GITHUB_PATH"
 
       - name: Generate Xcode project
         run: xcodegen generate --spec project.yml
+
+      - name: Verify release assets
+        run: sh ci_scripts/verify_assets.sh
 
       - name: Derive version
         id: version
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
+          if [[ ! "$VERSION" =~ ^[0-9]+(\.[0-9]+){2}(-[0-9A-Za-z][0-9A-Za-z.-]*)?(\+[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "error: release tag must be v<semantic-version>; got ${GITHUB_REF_NAME}" >&2
+            exit 1
+          fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Releasing Ondas $VERSION (build ${GITHUB_RUN_NUMBER})"
+
+      - name: Run unit tests
+        # Run before importing any signing or notarization secrets. Release tags do not otherwise
+        # pass through the pull-request/main CI workflow.
+        run: |
+          xcodebuild test \
+            -project "${APP_NAME}.xcodeproj" \
+            -scheme Ondas \
+            -destination 'platform=iOS Simulator,name=iPhone 17 Pro Max' \
+            -derivedDataPath "$RUNNER_TEMP/TestDerivedData" \
+            CODE_SIGNING_ALLOWED=NO
 
       - name: Import Developer ID certificate
         env:
@@ -72,9 +97,13 @@ jobs:
           CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_CERT_PASSWORD }}
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: |
+          : "${CERT_P12_BASE64:?error: DEVELOPER_ID_CERT_P12_BASE64 is required}"
+          : "${CERT_PASSWORD:?error: DEVELOPER_ID_CERT_PASSWORD is required}"
+          : "${KEYCHAIN_PASSWORD:?error: KEYCHAIN_PASSWORD is required}"
+          umask 077
           KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
           CERT_PATH="$RUNNER_TEMP/developer_id.p12"
-          echo "$CERT_P12_BASE64" | base64 --decode > "$CERT_PATH"
+          printf '%s' "$CERT_P12_BASE64" | base64 --decode > "$CERT_PATH"
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
@@ -89,8 +118,10 @@ jobs:
         env:
           ASC_KEY_P8_BASE64: ${{ secrets.ASC_API_KEY_P8_BASE64 }}
         run: |
+          : "${ASC_KEY_P8_BASE64:?error: ASC_API_KEY_P8_BASE64 is required}"
+          umask 077
           API_KEY_PATH="$RUNNER_TEMP/asc_api_key.p8"
-          echo "$ASC_KEY_P8_BASE64" | base64 --decode > "$API_KEY_PATH"
+          printf '%s' "$ASC_KEY_P8_BASE64" | base64 --decode > "$API_KEY_PATH"
           echo "API_KEY_PATH=$API_KEY_PATH" >> "$GITHUB_ENV"
 
       - name: Archive (Mac Catalyst)
@@ -112,6 +143,16 @@ jobs:
             -allowProvisioningUpdates \
             CODE_SIGN_STYLE=Automatic \
             DEVELOPMENT_TEAM="$TEAM_ID" \
+            ONDAS_DEVELOPMENT_TEAM="$TEAM_ID" \
+            ONDAS_MAIN_APP_BUNDLE_IDENTIFIER="$MAIN_APP_BUNDLE_IDENTIFIER" \
+            ONDAS_MENU_BAR_AGENT_BUNDLE_IDENTIFIER="${MAIN_APP_BUNDLE_IDENTIFIER}.MenuBar" \
+            ONDAS_TEST_BUNDLE_IDENTIFIER="${MAIN_APP_BUNDLE_IDENTIFIER}.tests" \
+            ONDAS_ICLOUD_CONTAINER_IDENTIFIER="iCloud.${MAIN_APP_BUNDLE_IDENTIFIER}" \
+            ONDAS_IOS_APP_GROUP_IDENTIFIER="group.${MAIN_APP_BUNDLE_IDENTIFIER}" \
+            ONDAS_MAC_APP_GROUP_IDENTIFIER="${TEAM_ID}.${MAIN_APP_BUNDLE_IDENTIFIER}" \
+            ONDAS_UBIQUITY_KVSTORE_IDENTIFIER="${TEAM_ID}.${MAIN_APP_BUNDLE_IDENTIFIER}" \
+            ONDAS_KEYCHAIN_ACCESS_GROUP="${TEAM_ID}.${MAIN_APP_BUNDLE_IDENTIFIER}.shared" \
+            ONDAS_MENU_BAR_URL_SCHEME="$MENU_BAR_URL_SCHEME" \
             ENABLE_HARDENED_RUNTIME=YES \
             MARKETING_VERSION="$VERSION" \
             CURRENT_PROJECT_VERSION="${GITHUB_RUN_NUMBER}"
@@ -126,17 +167,18 @@ jobs:
           PROFILE_APP_BASE64: ${{ secrets.DEVELOPER_ID_PROFILE_APP_BASE64 }}
           PROFILE_AGENT_BASE64: ${{ secrets.DEVELOPER_ID_PROFILE_AGENT_BASE64 }}
         run: |
+          umask 077
           PROFILE_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
           XCODE_PROFILE_DIR="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
           mkdir -p "$PROFILE_DIR" "$XCODE_PROFILE_DIR"
           EXPORT_PLIST="$RUNNER_TEMP/exportOptions.plist"
-          cat > "$EXPORT_PLIST" <<'PLIST'
+          cat > "$EXPORT_PLIST" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
             <key>method</key><string>developer-id</string>
-            <key>teamID</key><string>3D997JL57S</string>
+            <key>teamID</key><string>${TEAM_ID}</string>
             <key>signingStyle</key><string>manual</string>
             <key>signingCertificate</key><string>Developer ID Application</string>
             <key>provisioningProfiles</key>
@@ -151,7 +193,7 @@ jobs:
               exit 1
             fi
             raw="$RUNNER_TEMP/profile.provisionprofile"
-            echo "$b64" | base64 --decode > "$raw"
+            printf '%s' "$b64" | base64 --decode > "$raw"
             dec="$RUNNER_TEMP/profile.plist"
             security cms -D -i "$raw" > "$dec"
             uuid=$(/usr/libexec/PlistBuddy -c "Print :UUID" "$dec")
@@ -236,13 +278,16 @@ jobs:
 
       - name: Update Homebrew cask
         env:
-          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          # The credential helper reads GH_TOKEN at use time, so the secret never becomes part of
+          # a remote URL or the tap checkout's .git/config.
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
           SHA: ${{ steps.package.outputs.sha256 }}
         run: |
           TAP_DIR="$RUNNER_TEMP/tap"
           # Full (not shallow) clone so `git pull --rebase` below works if we lose a push race.
-          git clone "https://x-access-token:${TAP_TOKEN}@github.com/${TAP_REPO}.git" "$TAP_DIR"
+          gh auth setup-git --hostname github.com --force
+          git clone "https://github.com/${TAP_REPO}.git" "$TAP_DIR"
           cd "$TAP_DIR" || exit 1
           mkdir -p Casks
           sed -e "s/@@VERSION@@/${VERSION}/" -e "s/@@SHA256@@/${SHA}/" \

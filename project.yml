@@ -1,6 +1,8 @@
 name: Ondas
 options:
-  bundleIdPrefix: com.keegancodes
+  # Every target declares its bundle identifier explicitly below. Keep XcodeGen's
+  # fallback namespace safe for forks that add a target before configuring Identity.xcconfig.
+  bundleIdPrefix: com.example
   deploymentTarget:
     # FoundationModels (Apple Intelligence on-device LLM) and the GA image-generation
     # APIs require iOS 26. Pinned to 26.4 for `SystemLanguageModel.tokenCount`, which
@@ -12,7 +14,6 @@ options:
 settings:
   base:
     SWIFT_VERSION: "6.0"
-    DEVELOPMENT_TEAM: 3D997JL57S
     MARKETING_VERSION: "1.0"
     CURRENT_PROJECT_VERSION: "1"
     SWIFT_STRICT_CONCURRENCY: complete
@@ -28,6 +29,10 @@ targets:
   Ondas:
     type: application
     platform: iOS
+    configFiles:
+      Debug: Config/Identity.xcconfig
+      Release: Config/Identity.xcconfig
+      Distribute: Config/Identity.xcconfig
     sources:
       - path: Ondas
     info:
@@ -37,6 +42,12 @@ targets:
         # Add-only Photos access, requested at save time (never at launch). The app only ever
         # writes generated images to the library; it never reads or lists the user's photos.
         NSPhotoLibraryAddUsageDescription: Save generated images to your photo library.
+        # AppInfo reads these values so the shared source stays independent of a
+        # particular publisher's bundle, App Group, and helper identifiers.
+        OndasMainAppBundleIdentifier: $(ONDAS_MAIN_APP_BUNDLE_IDENTIFIER)
+        OndasIOSAppGroupIdentifier: $(ONDAS_IOS_APP_GROUP_IDENTIFIER)
+        OndasMacAppGroupIdentifier: $(ONDAS_MAC_APP_GROUP_IDENTIFIER)
+        OndasMenuBarAgentBundleIdentifier: $(ONDAS_MENU_BAR_AGENT_BUNDLE_IDENTIFIER)
         # App Store Connect infers the export-compliance answer from the bundle.
         # This app implements no non-exempt encryption.
         ITSAppUsesNonExemptEncryption: false
@@ -62,7 +73,7 @@ targets:
           - UIInterfaceOrientationLandscapeRight
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.keegancodes.ondas
+        PRODUCT_BUNDLE_IDENTIFIER: $(ONDAS_MAIN_APP_BUNDLE_IDENTIFIER)
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: true
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
@@ -99,6 +110,10 @@ targets:
   OndasMenuBar:
     type: application
     platform: macOS
+    configFiles:
+      Debug: Config/Identity.xcconfig
+      Release: Config/Identity.xcconfig
+      Distribute: Config/Identity.xcconfig
     deploymentTarget:
       macOS: "26.4"
     sources:
@@ -125,12 +140,18 @@ targets:
         # launch at login, not in the current session). A sandboxed Catalyst app can't use
         # NSWorkspace, but it can open a URL, which LaunchServices routes to this handler.
         CFBundleURLTypes:
-          - CFBundleURLName: com.keegancodes.ondas.MenuBar
+          - CFBundleURLName: $(ONDAS_MENU_BAR_AGENT_BUNDLE_IDENTIFIER)
             CFBundleURLSchemes:
-              - ondas-menubar
+              - $(ONDAS_MENU_BAR_URL_SCHEME)
+        # AppInfo is shared with the Catalyst app, so both targets carry the main
+        # app identity and platform-specific container identifiers in their bundles.
+        OndasMainAppBundleIdentifier: $(ONDAS_MAIN_APP_BUNDLE_IDENTIFIER)
+        OndasIOSAppGroupIdentifier: $(ONDAS_IOS_APP_GROUP_IDENTIFIER)
+        OndasMacAppGroupIdentifier: $(ONDAS_MAC_APP_GROUP_IDENTIFIER)
+        OndasMenuBarAgentBundleIdentifier: $(ONDAS_MENU_BAR_AGENT_BUNDLE_IDENTIFIER)
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.keegancodes.ondas.MenuBar
+        PRODUCT_BUNDLE_IDENTIFIER: $(ONDAS_MENU_BAR_AGENT_BUNDLE_IDENTIFIER)
         SWIFT_VERSION: "6.0"
         MACOSX_DEPLOYMENT_TARGET: "26.4"
         # Never install the agent standalone — it's only ever embedded into the app's LoginItems by
@@ -143,7 +164,7 @@ targets:
         com.apple.security.app-sandbox: true
         com.apple.security.network.client: true
         com.apple.developer.icloud-container-identifiers:
-          - iCloud.com.keegancodes.ondas
+          - $(ONDAS_ICLOUD_CONTAINER_IDENTIFIER)
         com.apple.developer.icloud-services:
           - CloudKit
         # ONLY the team-scoped group (the agent shares the store + reads settings from it via
@@ -151,21 +172,25 @@ targets:
         # data from other apps" consent for a `group.` App Group even if unused, whereas the
         # team-scoped container is same-team and silent. (The app keeps `group.` for its iOS builds.)
         com.apple.security.application-groups:
-          - $(TeamIdentifierPrefix)com.keegancodes.ondas
+          - $(ONDAS_MAC_APP_GROUP_IDENTIFIER)
         # Same shared keychain access group as the app so the agent can read the telemetry key.
         keychain-access-groups:
-          - $(AppIdentifierPrefix)com.keegancodes.ondas.shared
+          - $(ONDAS_KEYCHAIN_ACCESS_GROUP)
 
   OndasTests:
     type: bundle.unit-test
     platform: iOS
+    configFiles:
+      Debug: Config/Identity.xcconfig
+      Release: Config/Identity.xcconfig
+      Distribute: Config/Identity.xcconfig
     sources:
       - path: OndasTests
     dependencies:
       - target: Ondas
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.keegancodes.ondas.tests
+        PRODUCT_BUNDLE_IDENTIFIER: $(ONDAS_TEST_BUNDLE_IDENTIFIER)
         GENERATE_INFOPLIST_FILE: true
 
 schemes:
