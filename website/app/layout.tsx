@@ -2,8 +2,9 @@ import type { Metadata, Viewport } from "next";
 import { Analytics } from "@vercel/analytics/next";
 import "./globals.css";
 
-const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "https://ondas.keegan.codes";
-const title = "Ondas — On-device AI chat for Mac";
+const siteUrl =
+  process.env.NEXT_PUBLIC_SITE_URL ?? "https://ondas.keegan.codes";
+const title = "Ondas — On-device AI chat for Mac & iOS";
 const description =
   "Ondas is an on-device chat app built with Apple Intelligence. Chats sync with iCloud, and optional telemetry can send usage data to an endpoint you choose.";
 

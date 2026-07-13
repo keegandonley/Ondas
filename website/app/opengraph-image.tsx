@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 // Route segment config
-export const alt = "Ondas — On-device AI chat for Mac";
+export const alt = "Ondas — On-device AI chat for Mac & iOS";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
@@ -58,7 +58,7 @@ export default async function OpengraphImage() {
               marginTop: 18,
             }}
           >
-            On-device AI chat for Mac
+            On-device AI chat for Mac & iOS
           </div>
         </div>
       </div>
