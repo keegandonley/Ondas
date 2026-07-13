@@ -463,6 +463,26 @@ section {
   height: 15px;
 }
 
+/* Platform divider (Mac / iOS) */
+.platform-split {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  max-width: 520px;
+  margin: 28px auto;
+  color: var(--slate);
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.platform-split::before,
+.platform-split::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
 /* ---------- Footer ---------- */
 footer {
   border-top: 1px solid var(--line);

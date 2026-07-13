@@ -1,6 +1,7 @@
 import { CopyButton } from "@/components/CopyButton";
 
 const INSTALL_COMMAND = "brew install --cask keegandonley/tap/ondas";
+const TESTFLIGHT_URL = "https://testflight.apple.com/join/qnENsYmK";
 
 const FEATURES = [
   {
@@ -38,6 +39,14 @@ function DownloadIcon() {
   );
 }
 
+function AppleIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M17.05 12.54c-.03-2.7 2.2-4 2.3-4.06-1.25-1.83-3.2-2.08-3.9-2.11-1.66-.17-3.24.98-4.08.98-.85 0-2.14-.96-3.52-.93-1.8.03-3.47 1.05-4.4 2.67-1.88 3.26-.48 8.08 1.35 10.72.9 1.29 1.96 2.74 3.35 2.69 1.35-.05 1.86-.87 3.49-.87 1.62 0 2.08.87 3.5.84 1.45-.02 2.36-1.31 3.24-2.61 1.03-1.5 1.45-2.95 1.47-3.03-.03-.01-2.82-1.08-2.85-4.28M14.4 4.6c.75-.9 1.25-2.16 1.11-3.4-1.08.04-2.38.72-3.15 1.62-.69.8-1.29 2.07-1.13 3.29 1.2.09 2.42-.61 3.17-1.51" />
+    </svg>
+  );
+}
+
 export default function Home() {
   return (
     <>
@@ -50,7 +59,7 @@ export default function Home() {
           </a>
           <a className="btn btn-sm hide-sm" href="#download">
             <DownloadIcon />
-            Install for Mac
+            Install for Mac & iOS
           </a>
         </div>
       </header>
@@ -67,12 +76,12 @@ export default function Home() {
             </h1>
             <p className="lead">
               Ondas is a simple chat app for the on-device Apple Intelligence
-              model on your Mac.
+              model on your Mac, iPhone, and iPad.
             </p>
             <div className="cta-row">
               <a className="btn" href="#download">
                 <DownloadIcon />
-                Install for Mac
+                Install for Mac & iOS
               </a>
               <a className="btn ghost" href="#features">
                 See what it does
@@ -188,17 +197,35 @@ export default function Home() {
           <div className="wrap">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img className="app-icon" src="/icon.png" alt="Ondas app icon" />
-            <h2>Get Ondas for Mac</h2>
+            <h2>Get Ondas</h2>
             <p>
-              Install with Homebrew and start a private conversation.
+              Install with Homebrew on your Mac, or join the TestFlight beta on
+              iPhone and iPad.
             </p>
             <div className="install">
               <code id="install-cmd">{INSTALL_COMMAND}</code>
               <CopyButton command={INSTALL_COMMAND} />
             </div>
             <p className="req">
-              Requires <strong>macOS 26</strong> · Apple silicon · Apple
+              Requires <strong>macOS 26</strong> · Apple Silicon · Apple
               Intelligence enabled
+            </p>
+
+            <div className="platform-split" aria-hidden="true">
+              <span>or</span>
+            </div>
+
+            <a
+              className="btn"
+              href={TESTFLIGHT_URL}
+              target="_blank"
+              rel="noopener"
+            >
+              <AppleIcon />
+              Get the iOS beta on TestFlight
+            </a>
+            <p className="req">
+              Requires <strong>iOS 26</strong> · Apple Intelligence enabled
             </p>
           </div>
         </section>
