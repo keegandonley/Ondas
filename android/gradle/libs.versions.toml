@@ -1,0 +1,121 @@
+# Single source of truth for Android dependency versions.
+# Mirrors the role project.yml plays on the Swift side.
+
+[versions]
+agp = "9.3.2"
+kotlin = "2.4.10"
+composeBom = "2026.08.00"
+# NOT covered by the Compose BOM -- androidx.compose.material3.adaptive ships on its own
+# version line, so the version has to be pinned here explicitly. This is the counterpart of
+# SwiftUI's NavigationSplitView: two columns on a tablet, a push stack on a phone, from one
+# declaration (spec #94).
+material3Adaptive = "1.3.0"
+
+coroutines = "1.11.0"
+serialization = "1.11.0"
+datetime = "0.8.0"
+# The telemetry exporter POSTs OTLP/JSON to a user-supplied collector. It is the app's
+# ONLY network dependency -- Ondas does no other I/O, by design.
+okhttp = "5.5.0"
+
+coreKtx = "1.19.0"
+activityCompose = "1.13.0"
+lifecycle = "2.11.0"
+
+# The Gemini Nano surface that replaces FoundationModels. beta4 is the current release --
+# note the published docs still show beta2, so this was taken from the Google Maven metadata
+# rather than the documentation. Pulls in com.google.mlkit:genai-common at the same version,
+# which is where FeatureStatus, DownloadStatus, StreamingCallback and GenAiException live.
+mlkitGenai = "1.0.0-beta4"
+
+# Room is the one new toolchain element in this family of repos -- Scalene and Cadence both
+# run with NO annotation processing at all. Justified here by the conversation list being a
+# reactive sorted query with cascade delete, which a JSON file store cannot serve.
+room = "2.8.4"
+# KSP publishes NO release for Kotlin 2.4.x; 2.3.11 is the newest there is. That looks like a
+# hard blocker for Room and is not: KSP2 is decoupled from the compiler internals it used to
+# track, and 2.3.11 configures and runs against Kotlin 2.4.10 + AGP 9. Established by trying
+# it rather than by reading the version numbers, which would have sent this port to SQLDelight
+# or a hand-rolled SQLite layer for no reason.
+ksp = "2.3.11"
+
+junit = "4.13.2"
+turbine = "1.2.1"
+
+# --- UI test (JVM, no emulator) ---
+# Robolectric runs the Android framework in the JVM, which is what lets Compose UI tests
+# live in `src/test` under the ordinary `testDebugUnitTest` gate. That is the whole UI-test
+# strategy: there is no `androidTest` source set, because CI has no emulator and a UI test
+# nothing runs is worth less than the reasoning it replaces.
+robolectric = "4.16.1"
+androidxTestExtJunit = "1.3.0"
+androidxTestCore = "1.7.0"
+
+[libraries]
+# --- pure-Kotlin core (used by :ondaskit) ---
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
+kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
+# CAUTION: kotlinx.datetime.Instant is a DEPRECATED typealias in 0.8.0 and fails any module
+# with allWarningsAsErrors -- which :ondaskit has on. Use kotlin.time.Instant /
+# kotlin.time.Clock, the same types the typealias points at. Likewise Month.number does not
+# exist in 0.8.0; use month.ordinal + 1.
+kotlinx-datetime = { module = "org.jetbrains.kotlinx:kotlinx-datetime", version.ref = "datetime" }
+okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
+
+# --- on-device model (:app) ---
+mlkit-genai-prompt = { module = "com.google.mlkit:genai-prompt", version.ref = "mlkitGenai" }
+okhttp-mockwebserver = { module = "com.squareup.okhttp3:mockwebserver3-junit4", version.ref = "okhttp" }
+
+# --- Android app ---
+androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
+androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activityCompose" }
+androidx-lifecycle-viewmodel-compose = { module = "androidx.lifecycle:lifecycle-viewmodel-compose", version.ref = "lifecycle" }
+androidx-lifecycle-runtime-compose = { module = "androidx.lifecycle:lifecycle-runtime-compose", version.ref = "lifecycle" }
+
+# --- Compose (versions come from the BOM) ---
+compose-bom = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }
+compose-ui = { module = "androidx.compose.ui:ui" }
+compose-ui-graphics = { module = "androidx.compose.ui:ui-graphics" }
+compose-ui-tooling = { module = "androidx.compose.ui:ui-tooling" }
+compose-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling-preview" }
+compose-foundation = { module = "androidx.compose.foundation:foundation" }
+# Unlike Scalene and Cadence, Ondas is NOT a brand-first app with a palette that forbids
+# Material's -- it renders system-styled bubbles, a Form-shaped settings sheet and a
+# split-view list. Material3 is the honest counterpart of what SwiftUI supplies here, so it
+# is a first-class dependency rather than a fenced-off one.
+compose-material3 = { module = "androidx.compose.material3:material3" }
+# material3 1.4.0 DROPPED its transitive dependency on material-icons-core, so Icons.Default
+# is not on the classpath by default any more. Declared explicitly (version from the BOM) --
+# the app bar, the row context menu and the test-event result indicator all need glyphs, and
+# the alternative is hand-copied SVG path data. Core set only; -extended is NOT pulled in.
+compose-material-icons-core = { module = "androidx.compose.material:material-icons-core" }
+# adaptive: WindowAdaptiveInfo. adaptive-layout: ListDetailPaneScaffold/AnimatedPane.
+# adaptive-navigation: the navigator + NavigableListDetailPaneScaffold that gives the phone
+# layout its back behaviour. Versions come from material3Adaptive, NOT the BOM.
+compose-material3-adaptive = { module = "androidx.compose.material3.adaptive:adaptive", version.ref = "material3Adaptive" }
+compose-material3-adaptive-layout = { module = "androidx.compose.material3.adaptive:adaptive-layout", version.ref = "material3Adaptive" }
+compose-material3-adaptive-navigation = { module = "androidx.compose.material3.adaptive:adaptive-navigation", version.ref = "material3Adaptive" }
+
+# --- persistence (:app) ---
+room-runtime = { module = "androidx.room:room-runtime", version.ref = "room" }
+room-compiler = { module = "androidx.room:room-compiler", version.ref = "room" }
+room-testing = { module = "androidx.room:room-testing", version.ref = "room" }
+
+# --- test ---
+junit = { module = "junit:junit", version.ref = "junit" }
+robolectric = { module = "org.robolectric:robolectric", version.ref = "robolectric" }
+androidx-test-ext-junit = { module = "androidx.test.ext:junit", version.ref = "androidxTestExtJunit" }
+androidx-test-core = { module = "androidx.test:core", version.ref = "androidxTestCore" }
+compose-ui-test-junit4 = { module = "androidx.compose.ui:ui-test-junit4" }
+compose-ui-test-manifest = { module = "androidx.compose.ui:ui-test-manifest" }
+kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
+turbine = { module = "app.cash.turbine:turbine", version.ref = "turbine" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+# NOTE: org.jetbrains.kotlin.android is deliberately absent. AGP 9 has built-in Kotlin
+# support and applying that plugin is a hard configuration failure.
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+compose-compiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }

@@ -216,6 +216,53 @@ struct TelemetryTests {
         #expect(tokenValue["stringValue"] == nil)
     }
 
+    /// The encoder's output must match `contracts/otlp/llm_span.json`, the same fixture the Kotlin
+    /// suite decodes (`TelemetryTest.encoder output matches the shared contract fixture`).
+    ///
+    /// Two native codebases drift silently, and this payload has a consumer outside the repo
+    /// (coding-stats). A shared fixture is the only thing that makes a wire-shape change on one
+    /// platform fail the build on the other.
+    ///
+    /// Compared as parsed structures, not bytes: key order is an artifact of each platform's JSON
+    /// encoder and means nothing to the collector, whereas a renamed key or a 64-bit integer that
+    /// stopped being a string means everything.
+    @Test func encoderOutputMatchesSharedContractFixture() throws {
+        let span = TelemetrySpan(
+            name: "ondas.llm",
+            traceIdHex: "0123456789abcdef0123456789abcdef",
+            spanIdHex: "0123456789abcdef",
+            startUnixNano: 1_000,
+            endUnixNano: 2_000,
+            attributes: [
+                .init(key: "llm.model_name", value: .string("apple-on-device")),
+                .init(key: "llm.token_count.prompt", value: .int(5)),
+            ]
+        )
+
+        let encoded = try OTLPExporter.encode([span], serviceVersion: "1.0")
+        let actual = try #require(
+            try JSONSerialization.jsonObject(with: encoded) as? NSDictionary
+        )
+
+        let fixtureURL = Self.contractsURL.appendingPathComponent("otlp/llm_span.json")
+        let fixtureData = try Data(contentsOf: fixtureURL)
+        let expected = try #require(
+            try JSONSerialization.jsonObject(with: fixtureData) as? NSDictionary
+        )
+
+        #expect(actual == expected)
+    }
+
+    /// The repo-root `contracts/` directory, read in place. Deriving it from `#filePath` rather
+    /// than bundling a copy is deliberate — a duplicated fixture is how the drift a shared fixture
+    /// exists to catch gets hidden.
+    private static var contractsURL: URL {
+        URL(fileURLWithPath: #filePath)     // OndasTests/TelemetryTests.swift
+            .deletingLastPathComponent()    // OndasTests/
+            .deletingLastPathComponent()    // repo root
+            .appendingPathComponent("contracts")
+    }
+
     // MARK: Settings round-trip
 
     @MainActor

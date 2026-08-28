@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!--
+          Spec #88's capability probe. Debug variant ONLY, so it cannot reach a release build
+          at all: this file is src/debug/AndroidManifest.xml and the activity's source is in
+          src/debug/kotlin. It is exported so it can be started from the shell without a
+          launcher entry; that is safe here for the same reason the whole component is safe,
+          namely that it does not exist in a release APK. Launch instructions are in
+          PORTING.md rather than in this comment, because an XML comment cannot contain a
+          double hyphen and the command needs one.
+        -->
+        <activity
+            android:name=".spike.NanoSpikeActivity"
+            android:exported="true"
+            android:label="Nano Spike"
+            android:theme="@style/Theme.Ondas" />
+    </application>
+</manifest>

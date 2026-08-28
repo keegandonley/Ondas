@@ -53,3 +53,12 @@ Config/Identity.local.xcconfig
 *.secrets
 Secrets.plist
 Config/Secrets.xcconfig
+
+# --- Android (android/) ---
+# The build outputs and the SDK path are ignored by android/.gitignore, next to the module
+# they belong to. These are the editor/profiler artifacts Android tooling drops at the repo
+# root instead.
+.idea/
+*.iml
+*.hprof
+.kotlin/

@@ -1,0 +1,76 @@
+name: Android
+
+# Path-filtered so Swift-only changes never spin up a Gradle build, and Kotlin-only changes
+# never start the macOS runner in ci.yml or the Xcode Cloud side.
+#
+# `contracts/**` is the deliberate EXCEPTION: it fires BOTH workflows, and must. It holds
+# fixtures both suites decode, and the entire reason for putting a fixture there is that a
+# wire-shape change breaks one platform's build the moment the other's changes. Excluding it
+# from either side would turn the drift protection off and leave a directory that looks
+# guarded but is not.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'android/**'
+      - 'contracts/**'
+      - '.github/workflows/android.yml'
+  pull_request:
+    paths:
+      - 'android/**'
+      - 'contracts/**'
+      - '.github/workflows/android.yml'
+  workflow_dispatch:
+
+# The build only needs to read the checkout.
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - name: Checkout
+        # v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # Compose UI tests live in these same JVM unit-test source sets, on Robolectric,
+      # precisely so this runner needs no emulator. There is no `androidTest` source set
+      # anywhere in the project and no connectedCheck step to add. If one is ever added it
+      # needs its own job with a device, and must not be folded in here.
+      - name: Unit tests
+        run: ./gradlew :ondaskit:test :app:testDebugUnitTest
+
+      - name: Lint
+        run: ./gradlew :app:lintDebug
+
+      - name: Assemble debug
+        run: ./gradlew :app:assembleDebug
+
+      - name: Upload reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-reports
+          path: |
+            android/**/build/reports/**
+            android/**/build/test-results/**

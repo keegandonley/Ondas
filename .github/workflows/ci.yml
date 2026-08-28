@@ -1,10 +1,25 @@
 name: CI
 
+# Path-filtered so a Kotlin-only change never starts a macOS runner. The Android side has
+# its own workflow (android.yml). `workflow_dispatch` is deliberately unfiltered so this can
+# always be run by hand.
+#
+# The two filters are mirror images with ONE deliberate exception: a change under
+# `contracts/**` fires both, because that directory holds fixtures both suites decode and the
+# point of it is that a wire-shape change breaks whichever platform did not change. Do not
+# "fix" the overlap by adding contracts/** to the ignore list below — that disables the drift
+# protection while leaving the directory looking guarded.
 on:
   pull_request:
+    paths-ignore:
+      - 'android/**'
+      - '.github/workflows/android.yml'
   push:
     branches:
       - main
+    paths-ignore:
+      - 'android/**'
+      - '.github/workflows/android.yml'
   workflow_dispatch:
 
 # Tests only need to read the checkout. Keep the automatically issued token
