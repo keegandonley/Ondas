@@ -1,0 +1,78 @@
+name: Web
+
+# Path-filtered so a Swift- or Kotlin-only change never spins up a Node build, and a web-only
+# change never starts the macOS runner in ci.yml or the Gradle build in android.yml.
+#
+# TWO deliberate exceptions to "web/** only", for the same reason contracts/** fires both
+# ci.yml and android.yml — a shared artifact only stops drift if changing it runs the platform
+# that did NOT change:
+#
+#   1. `Ondas/Resources/Assets.xcassets/**`. `web/src/design/Theme.test.ts` reads the accent
+#      colorset IN PLACE and fails if web/src/design/Theme.ts has drifted from it. Without this
+#      path, editing the iOS accent would go green while silently un-branding the web app.
+#
+#   2. `.github/workflows/web.yml` itself.
+#
+# `contracts/**` is deliberately NOT here yet. Telemetry is stubbed to a no-op interface for
+# web v1, so no web test decodes contracts/otlp/llm_span.json — and contracts/README.md is
+# explicit that a fixture nothing loads is worse than no fixture. Add contracts/** to this
+# filter in the same change that builds the real OTLP encoder, not before.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - 'Ondas/Resources/Assets.xcassets/**'
+      - '.github/workflows/web.yml'
+  pull_request:
+    paths:
+      - 'web/**'
+      - 'Ondas/Resources/Assets.xcassets/**'
+      - '.github/workflows/web.yml'
+  workflow_dispatch:
+
+# The build only needs to read the checkout.
+permissions:
+  contents: read
+
+concurrency:
+  group: web-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - name: Checkout
+        # v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      # `vitest run` without --passWithNoTests: a suite that reports success while running
+      # nothing is the "tests that cannot fail" pattern, and this step must fail if the tests
+      # ever stop being discovered.
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build

@@ -1,0 +1,66 @@
+/*
+ * The rendered app reads `var(--ondas-*)`; no stylesheet can import src/design/Theme.ts, so
+ * every token is necessarily restated here.
+ *
+ * That duplication IS enforced. `Theme.test.ts` § "globals.css matches the palettes" parses
+ * this file and asserts that EVERY key of `ThemePalette` appears in both blocks below, with
+ * values equal to `lightPalette` / `darkPalette`, and that neither block carries a token the
+ * other lacks. `Theme.accentLight` / `accentDark` are in turn pinned to
+ * Ondas/Resources/Assets.xcassets/AccentColor.colorset/Contents.json. So the chain from the
+ * Xcode asset catalog to the rendered pixel is closed, and editing any single link fails CI.
+ *
+ * Naming is mechanical: a ThemePalette key in camelCase becomes `--ondas-` + kebab-case.
+ * Keep it mechanical — the test derives the property name from the key, so an ad-hoc rename
+ * here fails rather than silently going unchecked.
+ */
+:root {
+  color-scheme: light dark;
+
+  --ondas-accent: #665cf2;
+  --ondas-background: #ffffff;
+  --ondas-user-bubble: #665cf2;
+  --ondas-on-user-bubble: #ffffff;
+  --ondas-assistant-bubble: #f2f2f7;
+  --ondas-label: #000000;
+  --ondas-secondary-label: rgba(60, 60, 67, 0.6);
+  --ondas-tertiary-label: rgba(60, 60, 67, 0.3);
+  --ondas-separator: rgba(60, 60, 67, 0.29);
+  --ondas-bar: #f9f9f9;
+  --ondas-meter-warning: #ff9500;
+  --ondas-destructive: #ff3b30;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ondas-accent: #8b82f9;
+    --ondas-background: #000000;
+    --ondas-user-bubble: #8b82f9;
+    --ondas-on-user-bubble: #ffffff;
+    --ondas-assistant-bubble: #1c1c1e;
+    --ondas-label: #ffffff;
+    --ondas-secondary-label: rgba(235, 235, 245, 0.6);
+    --ondas-tertiary-label: rgba(235, 235, 245, 0.3);
+    --ondas-separator: rgba(84, 84, 88, 0.65);
+    --ondas-bar: #1c1c1e;
+    --ondas-meter-warning: #ff9f0a;
+    --ondas-destructive: #ff453a;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--ondas-background);
+  color: var(--ondas-label);
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}

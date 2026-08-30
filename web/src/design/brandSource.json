@@ -1,0 +1,9 @@
+{
+  "source": "Ondas/Resources/Assets.xcassets/AppIcon.appiconset/OndasIcon.png",
+  "sha256": "843279cb837f4790574803b511b57585e42c90b9a4d76e7f055a2241ee26db0b",
+  "derived": [
+    { "path": "web/app/icon.png", "size": 512 },
+    { "path": "web/app/apple-icon.png", "size": 180 }
+  ],
+  "command": "sips -Z <size> <source> --out <path>"
+}
